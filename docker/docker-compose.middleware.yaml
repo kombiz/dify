@@ -14,7 +14,7 @@ services:
     volumes:
       - ./volumes/db/data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
   # The redis cache.
   redis:
@@ -50,6 +50,7 @@ services:
       AUTHORIZATION_ADMINLIST_USERS: 'hello@dify.ai'
     ports:
       - "8080:8080"
+  
 
   # The DifySandbox
   sandbox:

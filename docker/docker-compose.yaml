@@ -14,26 +14,26 @@ services:
       # The base URL of console application web frontend, refers to the Console base URL of WEB service if console domain is
       # different from api or web app domain.
       # example: http://cloud.dify.ai
-      CONSOLE_WEB_URL: ''
+      CONSOLE_WEB_URL: 'http://100.98.236.3:3005'
       # Password for admin user initialization.
       # If left unset, admin user will not be prompted for a password when creating the initial admin account.
       INIT_PASSWORD: ''
       # The base URL of console application api server, refers to the Console base URL of WEB service if console domain is
       # different from api or web app domain.
       # example: http://cloud.dify.ai
-      CONSOLE_API_URL: ''
+      CONSOLE_API_URL: 'http://100.98.236.3:5001'
       # The URL prefix for Service API endpoints, refers to the base URL of the current API service if api domain is
       # different from console domain.
       # example: http://api.dify.ai
-      SERVICE_API_URL: ''
+      SERVICE_API_URL: 'http://100.98.236.3:5001'
       # The URL prefix for Web APP frontend, refers to the Web App base URL of WEB service if web app domain is different from
       # console or api domain.
       # example: http://udify.app
-      APP_WEB_URL: ''
+      APP_WEB_URL: 'http://100.98.236.3:3005'
       # File preview or download Url prefix.
       # used to display File preview or download Url to the front-end or as Multi-model inputs;
       # Url is signed and has expiration time.
-      FILES_URL: ''
+      FILES_URL: 'http://100.98.236.3:3005'
       # When enabled, migrations will be executed prior to application startup and the application will start after the migrations have completed.
       MIGRATION_ENABLED: 'true'
       # The configurations of postgres database connection.
@@ -148,10 +148,10 @@ services:
       - redis
     volumes:
       # Mount the storage directory to the container, for storing user files.
-      - ./volumes/app/storage:/app/api/storage
+      - /mnt/workdrive/volumes/app/storage:/app/api/storage
     # uncomment to expose dify-api port to host
-    # ports:
-    #   - "5001:5001"
+    ports:
+      - "5001:5001"
 
   # worker service
   # The Celery worker for processing the queue.
@@ -240,7 +240,7 @@ services:
       - redis
     volumes:
       # Mount the storage directory to the container, for storing user files.
-      - ./volumes/app/storage:/app/api/storage
+      - /mnt/workdrive/volumes/app/storage:/app/api/storage
 
   # Frontend web application.
   web:
@@ -250,16 +250,16 @@ services:
       # The base URL of console application api server, refers to the Console base URL of WEB service if console domain is
       # different from api or web app domain.
       # example: http://cloud.dify.ai
-      CONSOLE_API_URL: ''
+      CONSOLE_API_URL: 'http://100.98.236.3:3005'
       # The URL for Web APP api server, refers to the Web App base URL of WEB service if web app domain is different from
       # console or api domain.
       # example: http://udify.app
-      APP_API_URL: ''
+      APP_API_URL: 'http://100.98.236.3:3005'
       # The DSN for Sentry error reporting. If not set, Sentry error reporting will be disabled.
       SENTRY_DSN: ''
     # uncomment to expose dify-web port to host
-    # ports:
-    #   - "3000:3000"
+    ports:
+      - "3005:3000"
 
   # The postgres database.
   db:
@@ -276,8 +276,8 @@ services:
     volumes:
       - ./volumes/db/data:/var/lib/postgresql/data
     # uncomment to expose db(postgresql) port to host
-    # ports:
-    #   - "5432:5432"
+    ports:
+      - "5433:5432"
     healthcheck:
       test: [ "CMD", "pg_isready" ]
       interval: 1s
@@ -296,8 +296,8 @@ services:
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
     # uncomment to expose redis port to host
-    # ports:
-    #   - "6379:6379"
+    ports:
+      - "6379:6379"
 
   # The Weaviate vector store.
   weaviate:
@@ -320,8 +320,8 @@ services:
       AUTHORIZATION_ADMINLIST_ENABLED: 'true'
       AUTHORIZATION_ADMINLIST_USERS: 'hello@dify.ai'
     # uncomment to expose weaviate port to host
-    # ports:
-    #  - "8080:8080"
+    ports:
+     - "8080:8080"
 
   # The DifySandbox
   sandbox:
@@ -354,17 +354,17 @@ services:
 
   # The nginx reverse proxy.
   # used for reverse proxying the API service and Web service.
-  nginx:
-    image: nginx:latest
-    restart: always
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/proxy.conf:/etc/nginx/proxy.conf
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      #- ./nginx/ssl:/etc/ssl
-    depends_on:
-      - api
-      - web
-    ports:
-      - "80:80"
+  # nginx:
+  #  image: nginx:latest
+  #  restart: always
+  #  volumes:
+  #    - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+  #    - ./nginx/proxy.conf:/etc/nginx/proxy.conf
+  #    - ./nginx/conf.d:/etc/nginx/conf.d
+  #    #- ./nginx/ssl:/etc/ssl
+  #  depends_on:
+  #    - api
+  #    - web
+  #  ports:
+  #    - "80:80"
       #- "443:443"

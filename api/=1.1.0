@@ -1,0 +1,11 @@
+Collecting flatbuffers
+  Using cached flatbuffers-24.3.25-py2.py3-none-any.whl.metadata (850 bytes)
+Collecting termcolor
+  Using cached termcolor-2.4.0-py3-none-any.whl.metadata (6.1 kB)
+Collecting wrapt
+  Using cached wrapt-1.16.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+Using cached flatbuffers-24.3.25-py2.py3-none-any.whl (26 kB)
+Using cached termcolor-2.4.0-py3-none-any.whl (7.7 kB)
+Using cached wrapt-1.16.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (80 kB)
+Installing collected packages: flatbuffers, wrapt, termcolor
+Successfully installed flatbuffers-24.3.25 termcolor-2.4.0 wrapt-1.16.0

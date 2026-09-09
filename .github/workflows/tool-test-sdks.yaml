@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     name: unit test for Node.js SDK
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["ubuntu-latest"]' || '["self-hosted","onlyarag-dify-x64"]') }}
 
     strategy:
       matrix:

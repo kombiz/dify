@@ -1,70 +1,99 @@
 'use client'
 import type { FC } from 'react'
-import React, { useState } from 'react'
+import { Button } from '@langgenius/dify-ui/button'
+import { cn } from '@langgenius/dify-ui/cn'
+import { RiCloseLine } from '@remixicon/react'
+import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
+import { useQueryState } from 'nuqs'
+import * as React from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import cn from 'classnames'
-import Button from '@/app/components/base/button'
-import { LinkExternal02, XClose } from '@/app/components/base/icons/src/vender/line/general'
-import { IS_CE_EDITION } from '@/config'
-import { useProviderContext } from '@/context/provider-context'
-import { useModalContext } from '@/context/modal-context'
+import { LinkExternal02 } from '@/app/components/base/icons/src/vender/line/general'
+import {
+  settingsQueryParamName,
+  settingsQueryParser,
+} from '@/app/components/header/account-setting/query-params'
+import { systemFeaturesQueryOptions } from '@/features/system-features/client'
+import { consoleQuery } from '@/service/console'
 
 const APIKeyInfoPanel: FC = () => {
-  const isCloud = !IS_CE_EDITION
+  const { data: deploymentEdition } = useSuspenseQuery({
+    ...systemFeaturesQueryOptions(),
+    select: ({ deployment_edition }) => deployment_edition,
+  })
+  const isCloud = deploymentEdition === 'CLOUD'
 
-  const { hasSettedApiKey } = useProviderContext()
-  const { setShowAccountSettingModal } = useModalContext()
+  const { data: hasActiveProvider = false } = useQuery(
+    consoleQuery.workspaces.current.models.modelTypes.byModelType.get.queryOptions({
+      input: { params: { model_type: 'llm' } },
+      select: (response) => response.data.some((provider) => provider.status === 'active'),
+    }),
+  )
+  const [, setSettingsDestination] = useQueryState(settingsQueryParamName, settingsQueryParser)
 
   const { t } = useTranslation()
 
   const [isShow, setIsShow] = useState(true)
 
-  if (hasSettedApiKey)
-    return null
+  if (hasActiveProvider) return null
 
-  if (!(isShow))
-    return null
+  if (!isShow) return null
 
   return (
-    <div className={cn('bg-[#EFF4FF] border-[#D1E0FF]', 'mb-6 relative  rounded-2xl shadow-md border  p-8 ')}>
-      <div className={cn('text-[24px] text-gray-800 font-semibold', isCloud ? 'flex items-center h-8 space-x-1' : 'leading-8 mb-6')}>
-        {isCloud && <em-emoji id={'😀'} />}
-        {isCloud
-          ? (
-            <div>{t('appOverview.apiKeyInfo.cloud.trial.title', { providerName: 'OpenAI' })}</div>
-          )
-          : (
-            <div>
-              <div>{t('appOverview.apiKeyInfo.selfHost.title.row1')}</div>
-              <div>{t('appOverview.apiKeyInfo.selfHost.title.row2')}</div>
-            </div>
-          )}
+    <div
+      className={cn(
+        'border-components-panel-border bg-components-panel-bg',
+        'relative mb-6 rounded-2xl border p-8 shadow-md',
+      )}
+    >
+      <div
+        className={cn(
+          'text-[24px] font-semibold text-text-primary',
+          isCloud ? 'flex h-8 items-center space-x-1' : 'mb-6 leading-8',
+        )}
+      >
+        {isCloud && <em-emoji id="😀" />}
+        {isCloud ? (
+          <div>
+            {t(($) => $['apiKeyInfo.cloud.trial.title'], {
+              ns: 'appOverview',
+              providerName: 'OpenAI',
+            })}
+          </div>
+        ) : (
+          <div>
+            <div>{t(($) => $['apiKeyInfo.selfHost.title.row1'], { ns: 'appOverview' })}</div>
+            <div>{t(($) => $['apiKeyInfo.selfHost.title.row2'], { ns: 'appOverview' })}</div>
+          </div>
+        )}
       </div>
       {isCloud && (
-        <div className='mt-1 text-sm text-gray-600 font-normal'>{t(`appOverview.apiKeyInfo.cloud.${'trial'}.description`)}</div>
+        <div className="mt-1 text-sm font-normal text-text-tertiary">
+          {t(($) => $[`apiKeyInfo.cloud.${'trial'}.description`], { ns: 'appOverview' })}
+        </div>
       )}
-      <Button
-        type='primary'
-        className='space-x-2'
-        onClick={() => setShowAccountSettingModal({ payload: 'provider' })}
-      >
-        <div className='text-sm font-medium'>{t('appOverview.apiKeyInfo.setAPIBtn')}</div>
-        <LinkExternal02 className='w-4 h-4' />
+      <Button variant="primary" className="mt-2" onClick={() => setSettingsDestination('provider')}>
+        <div className="text-sm font-medium">
+          {t(($) => $['apiKeyInfo.setAPIBtn'], { ns: 'appOverview' })}
+        </div>
+        <LinkExternal02 className="size-4" />
       </Button>
       {!isCloud && (
         <a
-          className='mt-2 flex items-center h-[26px] text-xs  font-medium text-[#155EEF] p-1 space-x-1'
-          href='https://cloud.dify.ai/apps'
-          target='_blank' rel='noopener noreferrer'
+          className="mt-2 flex h-6.5 items-center space-x-1 p-1 text-xs font-medium text-primary-600"
+          href="https://cloud.dify.ai/apps"
+          target="_blank"
+          rel="noopener noreferrer"
         >
-          <div>{t('appOverview.apiKeyInfo.tryCloud')}</div>
-          <LinkExternal02 className='w-3 h-3' />
+          <div>{t(($) => $['apiKeyInfo.tryCloud'], { ns: 'appOverview' })}</div>
+          <LinkExternal02 className="size-3" />
         </a>
       )}
       <div
         onClick={() => setIsShow(false)}
-        className='absolute right-4 top-4 flex items-center justify-center w-8 h-8 cursor-pointer '>
-        <XClose className='w-4 h-4 text-gray-500' />
+        className="absolute top-4 right-4 flex size-8 cursor-pointer items-center justify-center"
+      >
+        <RiCloseLine className="size-4 text-text-tertiary" />
       </div>
     </div>
   )

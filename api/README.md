@@ -1,70 +1,112 @@
 # Dify Backend API
 
-## Usage
+## Setup and Run
 
-1. Start the docker-compose stack
+> [!IMPORTANT]
+>
+> In the v1.3.0 release, `poetry` has been replaced with
+> [`uv`](https://docs.astral.sh/uv/) as the package manager
+> for Dify API backend service.
 
-   The backend require some middleware, including PostgreSQL, Redis, and Weaviate, which can be started together using `docker-compose`.
+`uv` and `pnpm` are required to run the setup and development commands below.
 
-   ```bash
-   cd ../docker
-   docker-compose -f docker-compose.middleware.yaml -p dify up -d
-   cd ../api
-   ```
-2. Copy `.env.example` to `.env`
-3. Generate a `SECRET_KEY` in the `.env` file.
+### Using scripts (recommended)
 
-   ```bash
-   sed -i "/^SECRET_KEY=/c\SECRET_KEY=$(openssl rand -base64 42)" .env
-   ```
-4. If you use Anaconda, create a new environment and activate it
-   ```bash
-   conda create --name dify python=3.10
-   conda activate dify
-   ```
-5. Install dependencies
-   ```bash
-   pip install -r requirements.txt
-   ```
-6. Run migrate
+The scripts resolve paths relative to their location, so you can run them from anywhere.
 
-   Before the first launch, migrate the database to the latest version.
+1. Run setup (copies env files and installs dependencies).
 
    ```bash
-   flask db upgrade
+   ./dev/setup
    ```
 
-   ⚠️ If you encounter problems with jieba, for example
+1. Review `api/.env`, `web/.env.local`, and `docker/middleware.env` values (see the `SECRET_KEY` note below).
 
-   ```
-   > flask db upgrade
-   Error: While importing 'app', an ImportError was raised:
-   ```
+1. Start middleware (PostgreSQL/Redis/Weaviate).
 
-   Please run the following command instead.
-
-   ```
-   pip install -r requirements.txt --upgrade --force-reinstall
-   ```
-
-7. Start backend:
    ```bash
-   flask run --host 0.0.0.0 --port=5001 --debug
+   ./dev/start-docker-compose
    ```
-8. Setup your application by visiting http://localhost:5001/console/api/setup or other apis...
-9. If you need to debug local async processing, please start the worker service by running 
-`celery -A app.celery worker -P gevent -c 1 --loglevel INFO -Q dataset,generation,mail`.
-The started celery app handles the async tasks, e.g. dataset importing and documents indexing.
 
+1. Start backend (runs migrations first).
+
+   ```bash
+   ./dev/start-api
+   ```
+
+1. Start Dify [web](../web) service.
+
+   ```bash
+   ./dev/start-web
+   ```
+
+   `./dev/setup` and `./dev/start-web` install JavaScript dependencies through the repository root workspace, so you do not need a separate `cd web && pnpm install` step.
+
+1. Set up your application by visiting `http://localhost:3000`.
+
+1. Start the worker service (async and scheduler tasks, runs from `api`).
+
+   ```bash
+   ./dev/start-worker
+   ```
+
+1. Optional: start Celery Beat (scheduled tasks).
+
+   ```bash
+   ./dev/start-beat
+   ```
+
+### Environment notes
+
+> [!IMPORTANT]
+>
+> When the frontend and backend run on different subdomains, set COOKIE_DOMAIN to the site’s top-level domain (e.g., `example.com`). The frontend and backend must be under the same top-level domain in order to share authentication cookies.
+
+- Generate a `SECRET_KEY` in the `.env` file.
+
+  bash for Linux
+
+  ```bash
+  sed -i "/^SECRET_KEY=/c\\SECRET_KEY=$(openssl rand -base64 42)" .env
+  ```
+
+  bash for Mac
+
+  ```bash
+  secret_key=$(openssl rand -base64 42)
+  sed -i '' "/^SECRET_KEY=/c\\
+  SECRET_KEY=${secret_key}" .env
+  ```
 
 ## Testing
 
 1. Install dependencies for both the backend and the test environment
+
    ```bash
-   pip install -r requirements.txt -r requirements-dev.txt
-   ``` 
-   
-2. Run the tests locally with mocked system environment variables in `tool.pytest_env` section in `pyproject.toml`
-   ```bash
-   dev/pytest/pytest_all_tests.sh
+   cd api
+   uv sync --group dev
    ```
+
+1. Run the tests locally with mocked system environment variables in `tool.pytest_env` section in `pyproject.toml`, more can check [Claude.md](../CLAUDE.md)
+
+   Continue in the `api` directory from the previous step.
+
+   ```bash
+   uv run pytest                           # Run all tests
+   uv run pytest tests/unit_tests/         # Unit tests only
+   uv run pytest tests/integration_tests/  # Integration tests
+
+   # Code quality
+   ../dev/reformat              # Run all formatters and linters
+   uv run ruff check --fix ./   # Fix linting issues
+   uv run ruff format ./        # Format code
+   uv run pyrefly check         # Type checking
+   ```
+
+## Generate TS stub
+
+```
+uv run dev/generate_swagger_specs.py --output-dir openapi
+```
+
+use https://jsontotable.org/openapi-to-typescript to convert to typescript

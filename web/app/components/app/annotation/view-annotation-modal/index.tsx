@@ -1,51 +1,72 @@
 'use client'
 import type { FC } from 'react'
-import React, { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import cn from 'classnames'
-import dayjs from 'dayjs'
-import { Pagination } from 'react-headless-pagination'
-import { ArrowLeftIcon, ArrowRightIcon } from '@heroicons/react/24/outline'
-import EditItem, { EditItemType } from '../edit-annotation-modal/edit-item'
 import type { AnnotationItem, HitHistoryItem } from '../type'
-import s from './style.module.css'
-import HitHistoryNoData from './hit-history-no-data'
-import Drawer from '@/app/components/base/drawer-plus'
+import {
+  AlertDialog,
+  AlertDialogActions,
+  AlertDialogCancelButton,
+  AlertDialogConfirmButton,
+  AlertDialogContent,
+  AlertDialogTitle,
+} from '@langgenius/dify-ui/alert-dialog'
+import { cn } from '@langgenius/dify-ui/cn'
+import {
+  Drawer,
+  DrawerBackdrop,
+  DrawerCloseButton,
+  DrawerContent,
+  DrawerPopup,
+  DrawerPortal,
+  DrawerTitle,
+  DrawerViewport,
+} from '@langgenius/dify-ui/drawer'
+import { Pagination } from '@langgenius/dify-ui/pagination'
+import * as React from 'react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import Badge from '@/app/components/base/badge'
 import { MessageCheckRemove } from '@/app/components/base/icons/src/vender/line/communication'
-import DeleteConfirmModal from '@/app/components/base/modal/delete-confirm-modal'
 import TabSlider from '@/app/components/base/tab-slider-plain'
-import { fetchHitHistoryList } from '@/service/annotation'
 import { APP_PAGE_LIMIT } from '@/config'
+import useTimestamp from '@/hooks/use-timestamp'
+import { fetchHitHistoryList } from '@/service/annotation'
+import EditItem, { EditItemType } from '../edit-annotation-modal/edit-item'
+import HitHistoryNoData from './hit-history-no-data'
 
-type Props = {
+type Props = Readonly<{
   appId: string
   isShow: boolean
   onHide: () => void
   item: AnnotationItem
-  onSave: (editedQuery: string, editedAnswer: string) => void
+  onSave: (editedQuery: string, editedAnswer: string) => Promise<void>
   onRemove: () => void
-}
+}>
 
 enum TabType {
   annotation = 'annotation',
   hitHistory = 'hitHistory',
 }
 
-const ViewAnnotationModal: FC<Props> = ({
-  appId,
-  isShow,
-  onHide,
-  item,
-  onSave,
-  onRemove,
-}) => {
+const ViewAnnotationModal: FC<Props> = ({ appId, isShow, onHide, item, onSave, onRemove }) => {
   const { id, question, answer, created_at: createdAt } = item
   const [newQuestion, setNewQuery] = useState(question)
   const [newAnswer, setNewAnswer] = useState(answer)
   const { t } = useTranslation()
+  const { formatTime } = useTimestamp()
   const [currPage, setCurrPage] = React.useState<number>(0)
   const [total, setTotal] = useState(0)
+  const totalPages = total ? Math.max(Math.ceil(total / APP_PAGE_LIMIT), 1) : 1
   const [hitHistoryList, setHitHistoryList] = useState<HitHistoryItem[]>([])
+
+  // Update local state when item prop changes (e.g., when modal is reopened with updated data)
+  useEffect(() => {
+    setNewQuery(question)
+    setNewAnswer(answer)
+    setCurrPage(0)
+    setTotal(0)
+    setHitHistoryList([])
+  }, [question, answer, id])
+
   const fetchHitHistory = async (page = 1) => {
     try {
       const { data, total }: any = await fetchHitHistoryList(appId, id, {
@@ -54,40 +75,51 @@ const ViewAnnotationModal: FC<Props> = ({
       })
       setHitHistoryList(data as HitHistoryItem[])
       setTotal(total)
-    }
-    catch (e) {
-    }
+    } catch {}
   }
 
   useEffect(() => {
     fetchHitHistory(currPage + 1)
   }, [currPage])
 
+  // Fetch hit history when item changes
+  useEffect(() => {
+    if (isShow && id) fetchHitHistory(1)
+  }, [id, isShow])
+
   const tabs = [
-    { value: TabType.annotation, text: t('appAnnotation.viewModal.annotatedResponse') },
+    {
+      value: TabType.annotation,
+      text: t(($) => $['viewModal.annotatedResponse'], { ns: 'appAnnotation' }),
+    },
     {
       value: TabType.hitHistory,
-      text: (
-        hitHistoryList.length > 0
-          ? (
-            <div className='flex items-center space-x-1'>
-              <div>{t('appAnnotation.viewModal.hitHistory')}</div>
-              <div className='flex px-1.5 item-center rounded-md border border-black/[8%] h-5 text-xs font-medium text-gray-500'>{total} {t(`appAnnotation.viewModal.hit${hitHistoryList.length > 1 ? 's' : ''}`)}</div>
-            </div>
-          )
-          : t('appAnnotation.viewModal.hitHistory')
-      ),
+      text:
+        hitHistoryList.length > 0 ? (
+          <div className="flex items-center space-x-1">
+            <div>{t(($) => $['viewModal.hitHistory'], { ns: 'appAnnotation' })}</div>
+            <Badge
+              text={`${total} ${t(($) => $[`viewModal.hit${hitHistoryList.length > 1 ? 's' : ''}`], { ns: 'appAnnotation' })}`}
+            />
+          </div>
+        ) : (
+          t(($) => $['viewModal.hitHistory'], { ns: 'appAnnotation' })
+        ),
     },
   ]
   const [activeTab, setActiveTab] = useState(TabType.annotation)
-  const handleSave = (type: EditItemType, editedContent: string) => {
-    if (type === EditItemType.Query) {
-      setNewQuery(editedContent)
-      onSave(editedContent, newAnswer)
-    }
-    else {
-      setNewAnswer(editedContent)
-      onSave(newQuestion, editedContent)
+  const handleSave = async (type: EditItemType, editedContent: string) => {
+    try {
+      if (type === EditItemType.Query) {
+        await onSave(editedContent, newAnswer)
+        setNewQuery(editedContent)
+      } else {
+        await onSave(newQuestion, editedContent)
+        setNewAnswer(editedContent)
+      }
+    } catch (error) {
+      // If save fails, don't update local state
+      console.error('Failed to save annotation:', error)
     }
   }
   const [showModal, setShowModal] = useState(false)
@@ -97,141 +129,197 @@ const ViewAnnotationModal: FC<Props> = ({
       <EditItem
         type={EditItemType.Query}
         content={question}
-        onSave={editedContent => handleSave(EditItemType.Query, editedContent)}
+        onSave={(editedContent) => handleSave(EditItemType.Query, editedContent)}
       />
       <EditItem
         type={EditItemType.Answer}
         content={answer}
-        onSave={editedContent => handleSave(EditItemType.Answer, editedContent)}
+        onSave={(editedContent) => handleSave(EditItemType.Answer, editedContent)}
       />
     </>
   )
 
-  const hitHistoryTab = total === 0
-    ? (<HitHistoryNoData />)
-    : (
+  const hitHistoryTab =
+    total === 0 ? (
+      <HitHistoryNoData />
+    ) : (
       <div>
-        <table className={cn(s.table, 'w-full min-w-[440px] border-collapse border-0 text-sm')} >
-          <thead className="h-8 leading-8 border-b border-gray-200 text-gray-500 font-bold">
-            <tr className='uppercase'>
-              <td className='whitespace-nowrap'>{t('appAnnotation.hitHistoryTable.query')}</td>
-              <td className='whitespace-nowrap'>{t('appAnnotation.hitHistoryTable.match')}</td>
-              <td className='whitespace-nowrap'>{t('appAnnotation.hitHistoryTable.response')}</td>
-              <td className='whitespace-nowrap'>{t('appAnnotation.hitHistoryTable.source')}</td>
-              <td className='whitespace-nowrap'>{t('appAnnotation.hitHistoryTable.score')}</td>
-              <td className='whitespace-nowrap w-[140px]'>{t('appAnnotation.hitHistoryTable.time')}</td>
+        <table className={cn('w-full min-w-110 border-collapse border-0')}>
+          <thead className="system-xs-medium-uppercase text-text-tertiary">
+            <tr>
+              <td className="w-5 rounded-l-lg bg-background-section-burn pr-1 pl-2 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.query'], { ns: 'appAnnotation' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.match'], { ns: 'appAnnotation' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.response'], { ns: 'appAnnotation' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.source'], { ns: 'appAnnotation' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.score'], { ns: 'appAnnotation' })}
+              </td>
+              <td className="w-40 rounded-r-lg bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['hitHistoryTable.time'], { ns: 'appAnnotation' })}
+              </td>
             </tr>
           </thead>
-          <tbody className="text-gray-500">
-            {hitHistoryList.map(item => (
+          <tbody className="system-sm-regular text-text-secondary">
+            {hitHistoryList.map((item) => (
               <tr
                 key={item.id}
-                className={'border-b border-gray-200 h-8 hover:bg-gray-50 cursor-pointer'}
+                className="cursor-pointer border-b border-divider-subtle hover:bg-background-default-hover"
               >
                 <td
-                  className='whitespace-nowrap overflow-hidden text-ellipsis max-w-[250px]'
+                  className="max-w-62.5 overflow-hidden p-3 pr-2 text-ellipsis whitespace-nowrap"
                   title={item.question}
-                >{item.question}</td>
+                >
+                  {item.question}
+                </td>
                 <td
-                  className='whitespace-nowrap overflow-hidden text-ellipsis max-w-[250px]'
+                  className="max-w-62.5 overflow-hidden p-3 pr-2 text-ellipsis whitespace-nowrap"
                   title={item.match}
-                >{item.match}</td>
+                >
+                  {item.match}
+                </td>
                 <td
-                  className='whitespace-nowrap overflow-hidden text-ellipsis max-w-[250px]'
+                  className="max-w-62.5 overflow-hidden p-3 pr-2 text-ellipsis whitespace-nowrap"
                   title={item.response}
-                >{item.response}</td>
-                <td>{item.source}</td>
-                <td>{item.score ? item.score.toFixed(2) : '-'}</td>
-                <td>{dayjs(item.created_at * 1000).format('YYYY-MM-DD HH:mm')}</td>
+                >
+                  {item.response}
+                </td>
+                <td className="p-3 pr-2">{item.source}</td>
+                <td className="p-3 pr-2">{item.score ? item.score.toFixed(2) : '-'}</td>
+                <td className="p-3 pr-2">
+                  {formatTime(
+                    item.created_at,
+                    t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {(total && total > APP_PAGE_LIMIT)
-          ? <Pagination
-            className="flex items-center w-full h-10 text-sm select-none mt-8"
-            currentPage={currPage}
-            edgePageCount={2}
-            middlePagesSiblingCount={1}
-            setCurrentPage={setCurrPage}
-            totalPages={Math.ceil(total / APP_PAGE_LIMIT)}
-            truncableClassName="w-8 px-0.5 text-center"
-            truncableText="..."
-          >
-            <Pagination.PrevButton
-              disabled={currPage === 0}
-              className={`flex items-center mr-2 text-gray-500  focus:outline-none ${currPage === 0 ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:text-gray-600 dark:hover:text-gray-200'}`} >
-              <ArrowLeftIcon className="mr-3 h-3 w-3" />
-              {t('appLog.table.pagination.previous')}
-            </Pagination.PrevButton>
-            <div className={`flex items-center justify-center flex-grow ${s.pagination}`}>
-              <Pagination.PageButton
-                activeClassName="bg-primary-50 dark:bg-opacity-0 text-primary-600 dark:text-white"
-                className="flex items-center justify-center h-8 w-8 rounded-full cursor-pointer"
-                inactiveClassName="text-gray-500"
-              />
-            </div>
-            <Pagination.NextButton
-              disabled={currPage === Math.ceil(total / APP_PAGE_LIMIT) - 1}
-              className={`flex items-center mr-2 text-gray-500 focus:outline-none ${currPage === Math.ceil(total / APP_PAGE_LIMIT) - 1 ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:text-gray-600 dark:hover:text-gray-200'}`} >
-              {t('appLog.table.pagination.next')}
-              <ArrowRightIcon className="ml-3 h-3 w-3" />
-            </Pagination.NextButton>
-          </Pagination>
-          : null}
+        {total && total > APP_PAGE_LIMIT ? (
+          <Pagination
+            page={currPage + 1}
+            totalPages={totalPages}
+            onPageChange={(page) => setCurrPage(page - 1)}
+            labels={{
+              previous: t(($) => $['pagination.previous'], { ns: 'common' }),
+              next: t(($) => $['pagination.next'], { ns: 'common' }),
+              editPageNumber: (page, totalPages) =>
+                t(($) => $['pagination.editPageNumber'], { ns: 'common', page, totalPages }),
+              pageNumberInput: t(($) => $['pagination.pageNumber'], { ns: 'common' }),
+            }}
+          />
+        ) : null}
       </div>
-
     )
+  if (!isShow) return null
+
   return (
     <div>
       <Drawer
-        isShow={isShow}
-        onHide={onHide}
-        maxWidthClassName='!max-w-[800px]'
-        // t('appAnnotation.editModal.title') as string
-        title={
-          <TabSlider
-            className='shrink-0 relative top-[9px]'
-            value={activeTab}
-            onChange={v => setActiveTab(v as TabType)}
-            options={tabs}
-            noBorderBottom
-            itemClassName='!pb-3.5'
-          />
-        }
-        body={(
-          <div className='p-6 pb-4 space-y-6'>
-            {activeTab === TabType.annotation ? annotationTab : hitHistoryTab}
-          </div>
-        )}
-        foot={id
-          ? (
-            <div className='px-4 flex h-16 items-center justify-between border-t border-black/5 bg-gray-50 rounded-bl-xl rounded-br-xl leading-[18px] text-[13px] font-medium text-gray-500'>
-              <div
-                className='flex items-center pl-3 space-x-2 cursor-pointer'
-                onClick={() => setShowModal(true)}
-              >
-                <MessageCheckRemove />
-                <div>{t('appAnnotation.editModal.removeThisCache')}</div>
-              </div>
-              <div>{t('appAnnotation.editModal.createdAt')}&nbsp;{dayjs(createdAt * 1000).format('YYYY-MM-DD HH:mm')}</div>
-            </div>
-          )
-          : undefined}
-      >
-      </Drawer>
-      <DeleteConfirmModal
-        isShow={showModal}
-        onHide={() => setShowModal(false)}
-        onRemove={async () => {
-          await onRemove()
-          setShowModal(false)
-          onHide()
+        open
+        modal
+        disablePointerDismissal
+        swipeDirection="right"
+        onOpenChange={(open) => {
+          if (!open) onHide()
         }}
-        text={t('appDebug.feature.annotation.removeConfirm') as string}
-      />
+      >
+        <DrawerPortal>
+          <DrawerBackdrop />
+          <DrawerViewport>
+            <DrawerPopup className="data-[swipe-direction=right]:top-16 data-[swipe-direction=right]:right-2 data-[swipe-direction=right]:bottom-3 data-[swipe-direction=right]:h-auto data-[swipe-direction=right]:w-200 data-[swipe-direction=right]:max-w-[calc(100vw-1rem)] data-[swipe-direction=right]:rounded-xl data-[swipe-direction=right]:border-r-[0.5px] data-[swipe-direction=right]:border-divider-subtle">
+              <DrawerContent className="flex min-h-0 flex-1 flex-col p-0 pb-0">
+                <div className="shrink-0 border-b border-divider-subtle py-4">
+                  <div className="flex h-6 items-center justify-between pr-5 pl-6">
+                    <DrawerTitle render={<div />} className="min-w-0">
+                      <TabSlider
+                        className="relative top-2.25 shrink-0"
+                        value={activeTab}
+                        onChange={(v) => setActiveTab(v as TabType)}
+                        options={tabs}
+                        noBorderBottom
+                        itemClassName="pb-3.5!"
+                      />
+                    </DrawerTitle>
+                    <DrawerCloseButton
+                      aria-label={t(($) => $['operation.close'], { ns: 'common' })}
+                      className="size-6 rounded-md"
+                    />
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="space-y-6 p-6 pb-4">
+                    {activeTab === TabType.annotation ? annotationTab : hitHistoryTab}
+                  </div>
+                  <AlertDialog
+                    open={showModal}
+                    onOpenChange={(open) => !open && setShowModal(false)}
+                  >
+                    <AlertDialogContent>
+                      <div className="flex flex-col gap-2 px-6 pt-6 pb-4">
+                        <AlertDialogTitle
+                          title={t(($) => $['feature.annotation.removeConfirm'], {
+                            ns: 'appDebug',
+                          })}
+                          className="w-full truncate title-2xl-semi-bold text-text-primary"
+                        >
+                          {t(($) => $['feature.annotation.removeConfirm'], { ns: 'appDebug' })}
+                        </AlertDialogTitle>
+                      </div>
+                      <AlertDialogActions>
+                        <AlertDialogCancelButton>
+                          {t(($) => $['operation.cancel'], { ns: 'common' })}
+                        </AlertDialogCancelButton>
+                        <AlertDialogConfirmButton
+                          tone="destructive"
+                          onClick={async () => {
+                            await onRemove()
+                            setShowModal(false)
+                            onHide()
+                          }}
+                        >
+                          {t(($) => $['operation.confirm'], { ns: 'common' })}
+                        </AlertDialogConfirmButton>
+                      </AlertDialogActions>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+                {id && (
+                  <div className="flex h-16 shrink-0 items-center justify-between rounded-b-xl border-t border-divider-subtle bg-background-section-burn px-4 system-sm-medium text-text-tertiary">
+                    <button
+                      type="button"
+                      className="flex cursor-pointer appearance-none items-center space-x-2 border-0 bg-transparent py-0 pr-0 pl-3 text-left"
+                      onClick={() => setShowModal(true)}
+                    >
+                      <MessageCheckRemove />
+                      <span>
+                        {t(($) => $['editModal.removeThisCache'], { ns: 'appAnnotation' })}
+                      </span>
+                    </button>
+                    <div>
+                      {t(($) => $['editModal.createdAt'], { ns: 'appAnnotation' })}
+                      &nbsp;
+                      {formatTime(
+                        createdAt,
+                        t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+                      )}
+                    </div>
+                  </div>
+                )}
+              </DrawerContent>
+            </DrawerPopup>
+          </DrawerViewport>
+        </DrawerPortal>
+      </Drawer>
     </div>
-
   )
 }
 export default React.memo(ViewAnnotationModal)

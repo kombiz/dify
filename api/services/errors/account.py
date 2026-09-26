@@ -1,7 +1,7 @@
 from services.errors.base import BaseServiceError
 
 
-class AccountNotFound(BaseServiceError):
+class AccountNotFoundError(BaseServiceError):
     pass
 
 
@@ -9,7 +9,28 @@ class AccountRegisterError(BaseServiceError):
     pass
 
 
+class AccountEmailAlreadyInUseError(AccountRegisterError):
+    pass
+
+
+class AccountNormalizedEmailAlreadyInUseError(AccountEmailAlreadyInUseError):
+    pass
+
+
+class EmailDomainSuspendedError(AccountRegisterError):
+    def __init__(self, description: str = "This email domain has been suspended."):
+        super().__init__(description)
+
+
 class AccountLoginError(BaseServiceError):
+    pass
+
+
+class AccountPasswordError(BaseServiceError):
+    pass
+
+
+class RefreshTokenNotFoundError(BaseServiceError):
     pass
 
 
@@ -17,19 +38,15 @@ class AccountNotLinkTenantError(BaseServiceError):
     pass
 
 
-class CurrentPasswordIncorrectError(BaseServiceError):
-    pass
-
-
-class LinkAccountIntegrateError(BaseServiceError):
-    pass
-
-
-class TenantNotFound(BaseServiceError):
+class TenantNotFoundError(BaseServiceError):
     pass
 
 
 class AccountAlreadyInTenantError(BaseServiceError):
+    pass
+
+
+class SeatsLimitExceededError(BaseServiceError):
     pass
 
 

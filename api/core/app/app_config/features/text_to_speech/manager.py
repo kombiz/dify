@@ -1,39 +1,37 @@
+from typing import Any
+
 from core.app.app_config.entities import TextToSpeechEntity
 
 
 class TextToSpeechConfigManager:
     @classmethod
-    def convert(cls, config: dict) -> bool:
+    def convert(cls, config: dict[str, Any]):
         """
         Convert model config to model config
 
         :param config: model config args
         """
-        text_to_speech = False
-        text_to_speech_dict = config.get('text_to_speech')
+        text_to_speech = None
+        text_to_speech_dict = config.get("text_to_speech")
         if text_to_speech_dict:
-            if 'enabled' in text_to_speech_dict and text_to_speech_dict['enabled']:
+            if text_to_speech_dict.get("enabled"):
                 text_to_speech = TextToSpeechEntity(
-                    enabled=text_to_speech_dict.get('enabled'),
-                    voice=text_to_speech_dict.get('voice'),
-                    language=text_to_speech_dict.get('language'),
+                    enabled=text_to_speech_dict.get("enabled"),
+                    voice=text_to_speech_dict.get("voice"),
+                    language=text_to_speech_dict.get("language"),
                 )
 
         return text_to_speech
 
     @classmethod
-    def validate_and_set_defaults(cls, config: dict) -> tuple[dict, list[str]]:
+    def validate_and_set_defaults(cls, config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         """
         Validate and set defaults for text to speech feature
 
         :param config: app model config args
         """
         if not config.get("text_to_speech"):
-            config["text_to_speech"] = {
-                "enabled": False,
-                "voice": "",
-                "language": ""
-            }
+            config["text_to_speech"] = {"enabled": False, "voice": "", "language": ""}
 
         if not isinstance(config["text_to_speech"], dict):
             raise ValueError("text_to_speech must be of dict type")

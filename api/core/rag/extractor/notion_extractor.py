@@ -1,15 +1,17 @@
 import json
 import logging
-from typing import Any, Optional
+import operator
+from typing import Any, cast, override
 
-import requests
-from flask import current_app
+import httpx
+from sqlalchemy import update
 
+from configs import dify_config
 from core.rag.extractor.extractor_base import BaseExtractor
 from core.rag.models.document import Document
 from extensions.ext_database import db
 from models.dataset import Document as DocumentModel
-from models.source import DataSourceBinding
+from services.datasource_provider_service import DatasourceProviderService
 
 logger = logging.getLogger(__name__)
 
@@ -19,148 +21,183 @@ SEARCH_URL = "https://api.notion.com/v1/search"
 
 RETRIEVE_PAGE_URL_TMPL = "https://api.notion.com/v1/pages/{page_id}"
 RETRIEVE_DATABASE_URL_TMPL = "https://api.notion.com/v1/databases/{database_id}"
-HEADING_TYPE = ['heading_1', 'heading_2', 'heading_3']
+
+# Bounded connect/read timeout so a slow or hanging Notion API cannot block
+# dataset extraction indefinitely.
+_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+# if user want split by headings, use the corresponding splitter
+HEADING_SPLITTER = {
+    "heading_1": "# ",
+    "heading_2": "## ",
+    "heading_3": "### ",
+}
 
 
 class NotionExtractor(BaseExtractor):
-
     def __init__(
-            self,
-            notion_workspace_id: str,
-            notion_obj_id: str,
-            notion_page_type: str,
-            tenant_id: str,
-            document_model: Optional[DocumentModel] = None,
-            notion_access_token: Optional[str] = None,
-
+        self,
+        notion_workspace_id: str,
+        notion_obj_id: str,
+        notion_page_type: str,
+        tenant_id: str,
+        document_model: DocumentModel | None = None,
+        notion_access_token: str | None = None,
+        credential_id: str | None = None,
     ):
         self._notion_access_token = None
         self._document_model = document_model
         self._notion_workspace_id = notion_workspace_id
         self._notion_obj_id = notion_obj_id
         self._notion_page_type = notion_page_type
+        self._credential_id = credential_id
         if notion_access_token:
             self._notion_access_token = notion_access_token
         else:
-            self._notion_access_token = self._get_access_token(tenant_id,
-                                                               self._notion_workspace_id)
-            if not self._notion_access_token:
-                integration_token = current_app.config.get('NOTION_INTEGRATION_TOKEN')
+            try:
+                self._notion_access_token = self._get_access_token(tenant_id, self._credential_id)
+            except Exception as e:
+                logger.warning(
+                    (
+                        "Failed to get Notion access token from datasource credentials: %s, "
+                        "falling back to environment variable NOTION_INTEGRATION_TOKEN"
+                    ),
+                    e,
+                )
+                integration_token = dify_config.NOTION_INTEGRATION_TOKEN
                 if integration_token is None:
                     raise ValueError(
-                        "Must specify `integration_token` or set environment "
-                        "variable `NOTION_INTEGRATION_TOKEN`."
-                    )
+                        "Must specify `integration_token` or set environment variable `NOTION_INTEGRATION_TOKEN`."
+                    ) from e
 
                 self._notion_access_token = integration_token
 
+    @override
     def extract(self) -> list[Document]:
-        self.update_last_edited_time(
-            self._document_model
-        )
+        self.update_last_edited_time(self._document_model)
 
         text_docs = self._load_data_as_documents(self._notion_obj_id, self._notion_page_type)
 
         return text_docs
 
-    def _load_data_as_documents(
-            self, notion_obj_id: str, notion_page_type: str
-    ) -> list[Document]:
+    def _load_data_as_documents(self, notion_obj_id: str, notion_page_type: str) -> list[Document]:
         docs = []
-        if notion_page_type == 'database':
+        if notion_page_type == "database":
             # get all the pages in the database
             page_text_documents = self._get_notion_database_data(notion_obj_id)
             docs.extend(page_text_documents)
-        elif notion_page_type == 'page':
+        elif notion_page_type == "page":
             page_text_list = self._get_notion_block_data(notion_obj_id)
-            for page_text in page_text_list:
-                docs.append(Document(page_content=page_text))
+            docs.append(Document(page_content="\n".join(page_text_list)))
         else:
             raise ValueError("notion page type not supported")
 
         return docs
 
-    def _get_notion_database_data(
-            self, database_id: str, query_dict: dict[str, Any] = {}
-    ) -> list[Document]:
+    def _get_notion_database_data(self, database_id: str, query_dict: dict[str, Any] = {}) -> list[Document]:
         """Get all the pages from a Notion database."""
-        res = requests.post(
-            DATABASE_URL_TMPL.format(database_id=database_id),
-            headers={
-                "Authorization": "Bearer " + self._notion_access_token,
-                "Content-Type": "application/json",
-                "Notion-Version": "2022-06-28",
-            },
-            json=query_dict,
-        )
+        assert self._notion_access_token is not None, "Notion access token is required"
 
-        data = res.json()
+        database_content = []
+        next_cursor = None
+        has_more = True
 
-        database_content_list = []
-        if 'results' not in data or data["results"] is None:
-            return []
-        for result in data["results"]:
-            properties = result['properties']
-            data = {}
-            for property_name, property_value in properties.items():
-                type = property_value['type']
-                if type == 'multi_select':
-                    value = []
-                    multi_select_list = property_value[type]
-                    for multi_select in multi_select_list:
-                        value.append(multi_select['name'])
-                elif type == 'rich_text' or type == 'title':
-                    if len(property_value[type]) > 0:
-                        value = property_value[type][0]['plain_text']
-                    else:
-                        value = ''
-                elif type == 'select' or type == 'status':
-                    if property_value[type]:
-                        value = property_value[type]['name']
-                    else:
-                        value = ''
-                else:
-                    value = property_value[type]
-                data[property_name] = value
-            row_dict = {k: v for k, v in data.items() if v}
-            row_content = ''
-            for key, value in row_dict.items():
-                if isinstance(value, dict):
-                    value_dict = {k: v for k, v in value.items() if v}
-                    value_content = ''.join(f'{k}:{v} ' for k, v in value_dict.items())
-                    row_content = row_content + f'{key}:{value_content}\n'
-                else:
-                    row_content = row_content + f'{key}:{value}\n'
-            document = Document(page_content=row_content)
-            database_content_list.append(document)
+        while has_more:
+            current_query = query_dict.copy()
+            if next_cursor:
+                current_query["start_cursor"] = next_cursor
 
-        return database_content_list
-
-    def _get_notion_block_data(self, page_id: str) -> list[str]:
-        result_lines_arr = []
-        cur_block_id = page_id
-        while True:
-            block_url = BLOCK_CHILD_URL_TMPL.format(block_id=cur_block_id)
-            query_dict: dict[str, Any] = {}
-
-            res = requests.request(
-                "GET",
-                block_url,
+            res = httpx.post(
+                DATABASE_URL_TMPL.format(database_id=database_id),
                 headers={
                     "Authorization": "Bearer " + self._notion_access_token,
                     "Content-Type": "application/json",
                     "Notion-Version": "2022-06-28",
                 },
-                json=query_dict
+                json=current_query,
+                timeout=_REQUEST_TIMEOUT,
             )
-            data = res.json()
-            # current block's heading
-            heading = ''
+
+            response_data = res.json()
+
+            if "results" not in response_data or response_data["results"] is None:
+                break
+
+            for result in response_data["results"]:
+                properties = result["properties"]
+                data = {}
+                value: Any
+                for property_name, property_value in properties.items():
+                    type = property_value["type"]
+                    if type == "multi_select":
+                        value = []
+                        multi_select_list = property_value[type]
+                        for multi_select in multi_select_list:
+                            value.append(multi_select["name"])
+                    elif type in {"rich_text", "title"}:
+                        # Notion splits formatted text into multiple segments;
+                        # join them all so no part of the value is dropped.
+                        value = "".join(segment.get("plain_text", "") for segment in property_value[type])
+                    elif type in {"select", "status"}:
+                        if property_value[type]:
+                            value = property_value[type]["name"]
+                        else:
+                            value = ""
+                    else:
+                        value = property_value[type]
+                    data[property_name] = value
+                row_dict = {k: v for k, v in data.items() if v}
+                row_content = ""
+                for key, value in sorted(row_dict.items(), key=operator.itemgetter(0)):
+                    if isinstance(value, dict):
+                        value_dict = {k: v for k, v in value.items() if v}
+                        value_content = "".join(f"{k}:{v} " for k, v in value_dict.items())
+                        row_content = row_content + f"{key}:{value_content}\n"
+                    else:
+                        row_content = row_content + f"{key}:{value}\n"
+                if "url" in result:
+                    row_content = row_content + f"Row Page URL:{result.get('url', '')}\n"
+                database_content.append(row_content)
+
+            has_more = response_data.get("has_more", False)
+            next_cursor = response_data.get("next_cursor")
+
+        if not database_content:
+            return []
+
+        return [Document(page_content="\n".join(database_content))]
+
+    def _get_notion_block_data(self, page_id: str) -> list[str]:
+        assert self._notion_access_token is not None, "Notion access token is required"
+        result_lines_arr = []
+        start_cursor = None
+        block_url = BLOCK_CHILD_URL_TMPL.format(block_id=page_id)
+        while True:
+            query_dict: dict[str, Any] = {} if not start_cursor else {"start_cursor": start_cursor}
+            try:
+                res = httpx.request(
+                    "GET",
+                    block_url,
+                    headers={
+                        "Authorization": "Bearer " + self._notion_access_token,
+                        "Content-Type": "application/json",
+                        "Notion-Version": "2022-06-28",
+                    },
+                    params=query_dict,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                if res.status_code != 200:
+                    raise ValueError(f"Error fetching Notion block data: {res.text}")
+                data = res.json()
+            except httpx.HTTPError as e:
+                raise ValueError("Error fetching Notion block data") from e
+            if "results" not in data or not isinstance(data["results"], list):
+                raise ValueError("Error fetching Notion block data")
             for result in data["results"]:
                 result_type = result["type"]
                 result_obj = result[result_type]
                 cur_result_text_arr = []
-                if result_type == 'table':
+                if result_type == "table":
                     result_block_id = result["id"]
                     text = self._read_table_rows(result_block_id)
                     text += "\n\n"
@@ -172,40 +209,36 @@ class NotionExtractor(BaseExtractor):
                             if "text" in rich_text:
                                 text = rich_text["text"]["content"]
                                 cur_result_text_arr.append(text)
-                                if result_type in HEADING_TYPE:
-                                    heading = text
 
                     result_block_id = result["id"]
                     has_children = result["has_children"]
                     block_type = result["type"]
-                    if has_children and block_type != 'child_page':
-                        children_text = self._read_block(
-                            result_block_id, num_tabs=1
-                        )
+                    if has_children and block_type != "child_page":
+                        children_text = self._read_block(result_block_id, num_tabs=1)
                         cur_result_text_arr.append(children_text)
 
                     cur_result_text = "\n".join(cur_result_text_arr)
-                    cur_result_text += "\n\n"
-                    if result_type in HEADING_TYPE:
-                        result_lines_arr.append(cur_result_text)
+                    if result_type in HEADING_SPLITTER:
+                        result_lines_arr.append(f"{HEADING_SPLITTER[result_type]}{cur_result_text}")
                     else:
-                        result_lines_arr.append(f'{heading}\n{cur_result_text}')
+                        result_lines_arr.append(cur_result_text + "\n\n")
 
             if data["next_cursor"] is None:
                 break
             else:
-                cur_block_id = data["next_cursor"]
+                start_cursor = data["next_cursor"]
         return result_lines_arr
 
     def _read_block(self, block_id: str, num_tabs: int = 0) -> str:
         """Read a block."""
+        assert self._notion_access_token is not None, "Notion access token is required"
         result_lines_arr = []
-        cur_block_id = block_id
+        start_cursor = None
+        block_url = BLOCK_CHILD_URL_TMPL.format(block_id=block_id)
         while True:
-            block_url = BLOCK_CHILD_URL_TMPL.format(block_id=cur_block_id)
-            query_dict: dict[str, Any] = {}
+            query_dict: dict[str, Any] = {} if not start_cursor else {"start_cursor": start_cursor}
 
-            res = requests.request(
+            res = httpx.request(
                 "GET",
                 block_url,
                 headers={
@@ -213,17 +246,17 @@ class NotionExtractor(BaseExtractor):
                     "Content-Type": "application/json",
                     "Notion-Version": "2022-06-28",
                 },
-                json=query_dict
+                params=query_dict,
+                timeout=_REQUEST_TIMEOUT,
             )
             data = res.json()
-            if 'results' not in data or data["results"] is None:
+            if "results" not in data or data["results"] is None:
                 break
-            heading = ''
             for result in data["results"]:
                 result_type = result["type"]
                 result_obj = result[result_type]
                 cur_result_text_arr = []
-                if result_type == 'table':
+                if result_type == "table":
                     result_block_id = result["id"]
                     text = self._read_table_rows(result_block_id)
                     result_lines_arr.append(text)
@@ -235,41 +268,45 @@ class NotionExtractor(BaseExtractor):
                                 text = rich_text["text"]["content"]
                                 prefix = "\t" * num_tabs
                                 cur_result_text_arr.append(prefix + text)
-                                if result_type in HEADING_TYPE:
-                                    heading = text
                     result_block_id = result["id"]
                     has_children = result["has_children"]
                     block_type = result["type"]
-                    if has_children and block_type != 'child_page':
-                        children_text = self._read_block(
-                            result_block_id, num_tabs=num_tabs + 1
-                        )
+                    if has_children and block_type != "child_page":
+                        children_text = self._read_block(result_block_id, num_tabs=num_tabs + 1)
                         cur_result_text_arr.append(children_text)
 
                     cur_result_text = "\n".join(cur_result_text_arr)
-                    if result_type in HEADING_TYPE:
-                        result_lines_arr.append(cur_result_text)
+                    if result_type in HEADING_SPLITTER:
+                        result_lines_arr.append(f"{HEADING_SPLITTER[result_type]}{cur_result_text}")
                     else:
-                        result_lines_arr.append(f'{heading}\n{cur_result_text}')
+                        result_lines_arr.append(cur_result_text + "\n\n")
 
             if data["next_cursor"] is None:
                 break
             else:
-                cur_block_id = data["next_cursor"]
+                start_cursor = data["next_cursor"]
 
         result_lines = "\n".join(result_lines_arr)
         return result_lines
 
+    @staticmethod
+    def _get_cell_text(cell: list[dict[str, Any]]) -> str:
+        # A cell is an array of rich text segments (text, mention, equation);
+        # join them so one cell always maps to one Markdown column, keeping
+        # empty cells as empty columns so the column count stays stable.
+        return "".join(segment.get("plain_text") or segment.get("text", {}).get("content", "") for segment in cell)
+
     def _read_table_rows(self, block_id: str) -> str:
         """Read table rows."""
+        assert self._notion_access_token is not None, "Notion access token is required"
         done = False
         result_lines_arr = []
-        cur_block_id = block_id
+        start_cursor = None
+        block_url = BLOCK_CHILD_URL_TMPL.format(block_id=block_id)
         while not done:
-            block_url = BLOCK_CHILD_URL_TMPL.format(block_id=cur_block_id)
-            query_dict: dict[str, Any] = {}
+            query_dict: dict[str, Any] = {} if not start_cursor else {"start_cursor": start_cursor}
 
-            res = requests.request(
+            res = httpx.request(
                 "GET",
                 block_url,
                 headers={
@@ -277,65 +314,66 @@ class NotionExtractor(BaseExtractor):
                     "Content-Type": "application/json",
                     "Notion-Version": "2022-06-28",
                 },
-                json=query_dict
+                params=query_dict,
+                timeout=_REQUEST_TIMEOUT,
             )
             data = res.json()
             # get table headers text
             table_header_cell_texts = []
-            tabel_header_cells = data["results"][0]['table_row']['cells']
-            for tabel_header_cell in tabel_header_cells:
-                if tabel_header_cell:
-                    for table_header_cell_text in tabel_header_cell:
-                        text = table_header_cell_text["text"]["content"]
-                        table_header_cell_texts.append(text)
-            # get table columns text and format
+            table_header_cells = data["results"][0]["table_row"]["cells"]
+            for table_header_cell in table_header_cells:
+                table_header_cell_texts.append(self._get_cell_text(table_header_cell))
+            # Initialize Markdown table with headers
+            markdown_table = "| " + " | ".join(table_header_cell_texts) + " |\n"
+            markdown_table += "| " + " | ".join(["---"] * len(table_header_cell_texts)) + " |\n"
+
+            # Process data to format each row in Markdown table format
             results = data["results"]
             for i in range(len(results) - 1):
                 column_texts = []
-                tabel_column_cells = data["results"][i + 1]['table_row']['cells']
-                for j in range(len(tabel_column_cells)):
-                    if tabel_column_cells[j]:
-                        for table_column_cell_text in tabel_column_cells[j]:
-                            column_text = table_column_cell_text["text"]["content"]
-                            column_texts.append(f'{table_header_cell_texts[j]}:{column_text}')
-
-                cur_result_text = "\n".join(column_texts)
-                result_lines_arr.append(cur_result_text)
-
+                table_column_cells = data["results"][i + 1]["table_row"]["cells"]
+                for table_column_cell in table_column_cells:
+                    column_texts.append(self._get_cell_text(table_column_cell))
+                # Add row to Markdown table
+                markdown_table += "| " + " | ".join(column_texts) + " |\n"
+            result_lines_arr.append(markdown_table)
             if data["next_cursor"] is None:
                 done = True
                 break
             else:
-                cur_block_id = data["next_cursor"]
+                start_cursor = data["next_cursor"]
 
         result_lines = "\n".join(result_lines_arr)
         return result_lines
 
-    def update_last_edited_time(self, document_model: DocumentModel):
+    def update_last_edited_time(self, document_model: DocumentModel | None):
         if not document_model:
             return
 
         last_edited_time = self.get_notion_last_edited_time()
         data_source_info = document_model.data_source_info_dict
-        data_source_info['last_edited_time'] = last_edited_time
-        update_params = {
-            DocumentModel.data_source_info: json.dumps(data_source_info)
-        }
+        if data_source_info:
+            data_source_info["last_edited_time"] = last_edited_time
 
-        DocumentModel.query.filter_by(id=document_model.id).update(update_params)
+        db.session.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_model.id)
+            .values(data_source_info=json.dumps(data_source_info))
+        )
         db.session.commit()
 
     def get_notion_last_edited_time(self) -> str:
+        assert self._notion_access_token is not None, "Notion access token is required"
         obj_id = self._notion_obj_id
         page_type = self._notion_page_type
-        if page_type == 'database':
+        if page_type == "database":
             retrieve_page_url = RETRIEVE_DATABASE_URL_TMPL.format(database_id=obj_id)
         else:
             retrieve_page_url = RETRIEVE_PAGE_URL_TMPL.format(page_id=obj_id)
 
         query_dict: dict[str, Any] = {}
 
-        res = requests.request(
+        res = httpx.request(
             "GET",
             retrieve_page_url,
             headers={
@@ -343,25 +381,26 @@ class NotionExtractor(BaseExtractor):
                 "Content-Type": "application/json",
                 "Notion-Version": "2022-06-28",
             },
-            json=query_dict
+            json=query_dict,
+            timeout=_REQUEST_TIMEOUT,
         )
 
         data = res.json()
-        return data["last_edited_time"]
+        return cast(str, data["last_edited_time"])
 
     @classmethod
-    def _get_access_token(cls, tenant_id: str, notion_workspace_id: str) -> str:
-        data_source_binding = DataSourceBinding.query.filter(
-            db.and_(
-                DataSourceBinding.tenant_id == tenant_id,
-                DataSourceBinding.provider == 'notion',
-                DataSourceBinding.disabled == False,
-                DataSourceBinding.source_info['workspace_id'] == f'"{notion_workspace_id}"'
-            )
-        ).first()
+    def _get_access_token(cls, tenant_id: str, credential_id: str | None) -> str:
+        # get credential from tenant_id and credential_id
+        if not credential_id:
+            raise Exception(f"No credential id found for tenant {tenant_id}")
+        datasource_provider_service = DatasourceProviderService()
+        credential = datasource_provider_service.get_datasource_credentials(
+            tenant_id=tenant_id,
+            credential_id=credential_id,
+            provider="notion_datasource",
+            plugin_id="langgenius/notion_datasource",
+        )
+        if not credential:
+            raise Exception(f"No notion credential found for tenant {tenant_id} and credential {credential_id}")
 
-        if not data_source_binding:
-            raise Exception(f'No notion data source binding found for tenant {tenant_id} '
-                            f'and notion workspace {notion_workspace_id}')
-
-        return data_source_binding.access_token
+        return cast(str, credential["integration_secret"])

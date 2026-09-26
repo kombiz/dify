@@ -1,27 +1,34 @@
+import contextvars
 import logging
-import os
 import threading
 import uuid
-from collections.abc import Generator
-from typing import Any, Union
+from collections.abc import Generator, Mapping
+from typing import Any, Literal, overload
 
-from flask import Flask, current_app
+from flask import Flask, copy_current_request_context, current_app
 from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from configs import dify_config
 from core.app.app_config.easy_ui_based_app.model_config.converter import ModelConfigConverter
 from core.app.app_config.features.file_upload.manager import FileUploadConfigManager
-from core.app.apps.base_app_queue_manager import AppQueueManager, GenerateTaskStoppedException, PublishFrom
+from core.app.apps.base_app_queue_manager import AppQueueManager, PublishFrom
 from core.app.apps.completion.app_config_manager import CompletionAppConfigManager
 from core.app.apps.completion.app_runner import CompletionAppRunner
 from core.app.apps.completion.generate_response_converter import CompletionAppGenerateResponseConverter
+from core.app.apps.exc import GenerateTaskStoppedError
 from core.app.apps.message_based_app_generator import MessageBasedAppGenerator
 from core.app.apps.message_based_app_queue_manager import MessageBasedAppQueueManager
 from core.app.entities.app_invoke_entities import CompletionAppGenerateEntity, InvokeFrom
-from core.file.message_file_parser import MessageFileParser
-from core.model_runtime.errors.invoke import InvokeAuthorizationError, InvokeError
+from core.db.session_factory import session_factory
+from core.helper.trace_id_helper import extract_trace_session_id_from_args
+from core.ops.ops_trace_manager import TraceQueueManager
 from extensions.ext_database import db
-from models.account import Account
-from models.model import App, EndUser, Message
+from factories import file_factory
+from graphon.model_runtime.errors.invoke import InvokeAuthorizationError
+from models import Account, App, AppModelConfig, Conversation, EndUser, Message
+from models.model import load_annotation_reply_config
 from services.errors.app import MoreLikeThisDisabledError
 from services.errors.message import MessageNotExistsError
 
@@ -29,12 +36,52 @@ logger = logging.getLogger(__name__)
 
 
 class CompletionAppGenerator(MessageBasedAppGenerator):
-    def generate(self, app_model: App,
-                 user: Union[Account, EndUser],
-                 args: Any,
-                 invoke_from: InvokeFrom,
-                 stream: bool = True) \
-            -> Union[dict, Generator[dict, None, None]]:
+    @overload
+    def generate(
+        self,
+        app_model: App,
+        user: Account | EndUser,
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: Literal[True],
+        *,
+        session: Session,
+    ) -> Generator[str | Mapping[str, Any], None, None]: ...
+
+    @overload
+    def generate(
+        self,
+        app_model: App,
+        user: Account | EndUser,
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: Literal[False],
+        *,
+        session: Session,
+    ) -> Mapping[str, Any]: ...
+
+    @overload
+    def generate(
+        self,
+        app_model: App,
+        user: Account | EndUser,
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: bool = False,
+        *,
+        session: Session,
+    ) -> Mapping[str, Any] | Generator[str | Mapping[str, Any], None, None]: ...
+
+    def generate(
+        self,
+        app_model: App,
+        user: Account | EndUser,
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: bool = True,
+        *,
+        session: Session,
+    ) -> Mapping[str, Any] | Generator[str | Mapping[str, Any], None, None]:
         """
         Generate App response.
 
@@ -42,16 +89,14 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         :param user: account or end user
         :param args: request args
         :param invoke_from: invoke from source
-        :param stream: is stream
+        :param streaming: is stream
         """
-        query = args['query']
+        query = args["query"]
         if not isinstance(query, str):
-            raise ValueError('query must be a string')
+            raise ValueError("query must be a string")
 
-        query = query.replace('\x00', '')
-        inputs = args['inputs']
-
-        extras = {}
+        query = query.replace("\x00", "")
+        inputs = args["inputs"]
 
         # get conversation
         conversation = None
@@ -59,106 +104,136 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         # get app model config
         app_model_config = self._get_app_model_config(
             app_model=app_model,
-            conversation=conversation
+            conversation=conversation,
+            session=session,
         )
 
         # validate override model config
         override_model_config_dict = None
-        if args.get('model_config'):
+        if args.get("model_config"):
             if invoke_from != InvokeFrom.DEBUGGER:
-                raise ValueError('Only in App debug mode can override model config')
+                raise ValueError("Only in App debug mode can override model config")
 
             # validate config
             override_model_config_dict = CompletionAppConfigManager.config_validate(
-                tenant_id=app_model.tenant_id,
-                config=args.get('model_config')
+                tenant_id=app_model.tenant_id, config=args.get("model_config", {}), session=session
             )
+
+        annotation_reply = (
+            None if override_model_config_dict else load_annotation_reply_config(session, app_model_config.app_id)
+        )
 
         # parse files
-        files = args['files'] if 'files' in args and args['files'] else []
-        message_file_parser = MessageFileParser(tenant_id=app_model.tenant_id, app_id=app_model.id)
-        file_extra_config = FileUploadConfigManager.convert(override_model_config_dict or app_model_config.to_dict())
-        if file_extra_config:
-            file_objs = message_file_parser.validate_and_transform_files_arg(
-                files,
-                file_extra_config,
-                user
+        # TODO(QuantumGhost): Move file parsing logic to the API controller layer
+        # for better separation of concerns.
+        #
+        # For implementation reference, see the `_parse_file` function and
+        # `DraftWorkflowNodeRunApi` class which handle this properly.
+        with self._bind_file_access_scope(tenant_id=app_model.tenant_id, user=user, invoke_from=invoke_from):
+            files = args["files"] if args.get("files") else []
+            file_extra_config = FileUploadConfigManager.convert(
+                override_model_config_dict or app_model_config.to_dict(annotation_reply=annotation_reply)
             )
-        else:
-            file_objs = []
+            if file_extra_config:
+                file_objs = file_factory.build_from_mappings(
+                    mappings=files,
+                    tenant_id=app_model.tenant_id,
+                    config=file_extra_config,
+                    access_controller=self._file_access_controller,
+                )
+            else:
+                file_objs = []
 
-        # convert to app config
-        app_config = CompletionAppConfigManager.get_app_config(
-            app_model=app_model,
-            app_model_config=app_model_config,
-            override_config_dict=override_model_config_dict
-        )
+            # convert to app config
+            app_config = CompletionAppConfigManager.get_app_config(
+                app_model=app_model,
+                app_model_config=app_model_config,
+                override_config_dict=override_model_config_dict,
+                annotation_reply=annotation_reply,
+            )
 
-        # init application generate entity
-        application_generate_entity = CompletionAppGenerateEntity(
-            task_id=str(uuid.uuid4()),
-            app_config=app_config,
-            model_config=ModelConfigConverter.convert(app_config),
-            inputs=self._get_cleaned_inputs(inputs, app_config),
-            query=query,
-            files=file_objs,
-            user_id=user.id,
-            stream=stream,
-            invoke_from=invoke_from,
-            extras=extras
-        )
+            # get tracing instance
+            trace_manager = TraceQueueManager(
+                app_id=app_model.id, user_id=user.id if isinstance(user, Account) else user.session_id
+            )
 
-        # init generate records
-        (
-            conversation,
-            message
-        ) = self._init_generate_records(application_generate_entity)
+            # init application generate entity
+            application_generate_entity = CompletionAppGenerateEntity(
+                task_id=str(uuid.uuid4()),
+                app_config=app_config,
+                model_conf=ModelConfigConverter.convert(app_config),
+                file_upload_config=file_extra_config,
+                inputs=self._prepare_user_inputs(
+                    user_inputs=inputs, variables=app_config.variables, tenant_id=app_model.tenant_id
+                ),
+                query=query,
+                files=list(file_objs),
+                user_id=user.id,
+                stream=streaming,
+                invoke_from=invoke_from,
+                extras={
+                    **extract_trace_session_id_from_args(args),
+                },
+                trace_manager=trace_manager,
+            )
 
-        # init queue manager
-        queue_manager = MessageBasedAppQueueManager(
-            task_id=application_generate_entity.task_id,
-            user_id=application_generate_entity.user_id,
-            invoke_from=application_generate_entity.invoke_from,
-            conversation_id=conversation.id,
-            app_mode=conversation.mode,
-            message_id=message.id
-        )
+            # init generate records
+            (conversation, message) = self._init_generate_records(
+                application_generate_entity,
+                session=session,
+            )
 
-        # new thread
-        worker_thread = threading.Thread(target=self._generate_worker, kwargs={
-            'flask_app': current_app._get_current_object(),
-            'application_generate_entity': application_generate_entity,
-            'queue_manager': queue_manager,
-            'message_id': message.id,
-        })
+            # init queue manager
+            queue_manager = MessageBasedAppQueueManager(
+                task_id=application_generate_entity.task_id,
+                user_id=application_generate_entity.user_id,
+                invoke_from=application_generate_entity.invoke_from,
+                conversation_id=conversation.id,
+                app_mode=conversation.mode,
+                message_id=message.id,
+            )
 
-        worker_thread.start()
+            context = contextvars.copy_context()
 
-        # return response or stream generator
-        response = self._handle_response(
-            application_generate_entity=application_generate_entity,
-            queue_manager=queue_manager,
-            conversation=conversation,
-            message=message,
-            user=user,
-            stream=stream
-        )
+            # new thread with request context
+            @copy_current_request_context
+            def worker_with_context():
+                return context.run(
+                    self._generate_worker,
+                    flask_app=current_app._get_current_object(),  # type: ignore
+                    application_generate_entity=application_generate_entity,
+                    queue_manager=queue_manager,
+                    message_id=message.id,
+                )
 
-        return CompletionAppGenerateResponseConverter.convert(
-            response=response,
-            invoke_from=invoke_from
-        )
+            worker_thread = threading.Thread(target=worker_with_context)
 
-    def _generate_worker(self, flask_app: Flask,
-                         application_generate_entity: CompletionAppGenerateEntity,
-                         queue_manager: AppQueueManager,
-                         message_id: str) -> None:
+            worker_thread.start()
+
+            # return response or stream generator
+            response = self._handle_response(
+                application_generate_entity=application_generate_entity,
+                queue_manager=queue_manager,
+                conversation=conversation,
+                message=message,
+                user=user,
+                stream=streaming,
+            )
+
+            return CompletionAppGenerateResponseConverter.convert(response=response, invoke_from=invoke_from)
+
+    def _generate_worker(
+        self,
+        flask_app: Flask,
+        application_generate_entity: CompletionAppGenerateEntity,
+        queue_manager: AppQueueManager,
+        message_id: str,
+    ):
         """
         Generate worker in a new thread.
         :param flask_app: Flask app
         :param application_generate_entity: application generate entity
         :param queue_manager: queue manager
-        :param conversation_id: conversation ID
         :param message_id: message ID
         :return:
         """
@@ -169,23 +244,24 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
 
                 # chatbot app
                 runner = CompletionAppRunner()
-                runner.run(
-                    application_generate_entity=application_generate_entity,
-                    queue_manager=queue_manager,
-                    message=message
-                )
-            except GenerateTaskStoppedException:
+                with session_factory.create_session() as session:
+                    runner.run(
+                        application_generate_entity=application_generate_entity,
+                        queue_manager=queue_manager,
+                        message=message,
+                        session=session,
+                    )
+            except GenerateTaskStoppedError:
                 pass
             except InvokeAuthorizationError:
                 queue_manager.publish_error(
-                    InvokeAuthorizationError('Incorrect API key provided'),
-                    PublishFrom.APPLICATION_MANAGER
+                    InvokeAuthorizationError("Incorrect API key provided"), PublishFrom.APPLICATION_MANAGER
                 )
             except ValidationError as e:
                 logger.exception("Validation Error when generating")
                 queue_manager.publish_error(e, PublishFrom.APPLICATION_MANAGER)
-            except (ValueError, InvokeError) as e:
-                if os.environ.get("DEBUG") and os.environ.get("DEBUG").lower() == 'true':
+            except ValueError as e:
+                if dify_config.DEBUG:
                     logger.exception("Error when generating")
                 queue_manager.publish_error(e, PublishFrom.APPLICATION_MANAGER)
             except Exception as e:
@@ -194,116 +270,141 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
             finally:
                 db.session.close()
 
-    def generate_more_like_this(self, app_model: App,
-                                message_id: str,
-                                user: Union[Account, EndUser],
-                                invoke_from: InvokeFrom,
-                                stream: bool = True) \
-            -> Union[dict, Generator[dict, None, None]]:
+    def generate_more_like_this(
+        self,
+        app_model: App,
+        message_id: str,
+        user: Account | EndUser,
+        invoke_from: InvokeFrom,
+        stream: bool = True,
+        *,
+        session: Session,
+    ) -> Mapping | Generator[Mapping | str, None, None]:
         """
         Generate App response.
 
+        :param session: caller-owned database session used for message and historical model-config reads
         :param app_model: App
         :param message_id: message ID
         :param user: account or end user
         :param invoke_from: invoke from source
         :param stream: is stream
         """
-        message = db.session.query(Message).filter(
+        stmt = select(Message).where(
             Message.id == message_id,
             Message.app_id == app_model.id,
-            Message.from_source == ('api' if isinstance(user, EndUser) else 'console'),
+            Message.from_source == ("api" if isinstance(user, EndUser) else "console"),
             Message.from_end_user_id == (user.id if isinstance(user, EndUser) else None),
             Message.from_account_id == (user.id if isinstance(user, Account) else None),
-        ).first()
+        )
+        message = session.scalar(stmt)
 
         if not message:
             raise MessageNotExistsError()
 
-        current_app_model_config = app_model.app_model_config
+        current_app_model_config = (
+            session.get(AppModelConfig, app_model.app_model_config_id) if app_model.app_model_config_id else None
+        )
+        if not current_app_model_config:
+            raise MoreLikeThisDisabledError()
+
         more_like_this = current_app_model_config.more_like_this_dict
 
         if not current_app_model_config.more_like_this or more_like_this.get("enabled", False) is False:
             raise MoreLikeThisDisabledError()
 
-        app_model_config = message.app_model_config
-        override_model_config_dict = app_model_config.to_dict()
-        model_dict = override_model_config_dict['model']
-        completion_params = model_dict.get('completion_params')
-        completion_params['temperature'] = 0.9
-        model_dict['completion_params'] = completion_params
-        override_model_config_dict['model'] = model_dict
+        conversation = session.get(Conversation, message.conversation_id) if message.conversation_id else None
+        app_model_config = (
+            session.get(AppModelConfig, conversation.app_model_config_id)
+            if conversation and conversation.app_model_config_id
+            else None
+        )
+        if not app_model_config:
+            raise ValueError("Message app_model_config is None")
+        annotation_reply = load_annotation_reply_config(session, app_model_config.app_id)
+        override_model_config_dict = app_model_config.to_dict(annotation_reply=annotation_reply)
+        model_dict = override_model_config_dict["model"]
+        completion_params = model_dict.get("completion_params", {})
+        completion_params["temperature"] = 0.9
+        model_dict["completion_params"] = completion_params
+        override_model_config_dict["model"] = model_dict
 
-        # parse files
-        message_file_parser = MessageFileParser(tenant_id=app_model.tenant_id, app_id=app_model.id)
-        file_extra_config = FileUploadConfigManager.convert(override_model_config_dict or app_model_config.to_dict())
-        if file_extra_config:
-            file_objs = message_file_parser.validate_and_transform_files_arg(
-                message.files,
-                file_extra_config,
-                user
+        with self._bind_file_access_scope(tenant_id=app_model.tenant_id, user=user, invoke_from=invoke_from):
+            # parse files
+            file_extra_config = FileUploadConfigManager.convert(override_model_config_dict)
+            if file_extra_config:
+                file_objs = file_factory.build_from_mappings(
+                    mappings=message.message_files_with_session(session=session),
+                    tenant_id=app_model.tenant_id,
+                    config=file_extra_config,
+                    access_controller=self._file_access_controller,
+                )
+            else:
+                file_objs = []
+
+            # convert to app config
+            app_config = CompletionAppConfigManager.get_app_config(
+                app_model=app_model,
+                app_model_config=app_model_config,
+                override_config_dict=override_model_config_dict,
+                annotation_reply=annotation_reply,
             )
-        else:
-            file_objs = []
 
-        # convert to app config
-        app_config = CompletionAppConfigManager.get_app_config(
-            app_model=app_model,
-            app_model_config=app_model_config,
-            override_config_dict=override_model_config_dict
-        )
+            # init application generate entity
+            application_generate_entity = CompletionAppGenerateEntity(
+                task_id=str(uuid.uuid4()),
+                app_config=app_config,
+                model_conf=ModelConfigConverter.convert(app_config),
+                inputs=message.inputs_with_session(session=session),
+                query=message.query,
+                files=list(file_objs),
+                user_id=user.id,
+                stream=stream,
+                invoke_from=invoke_from,
+                extras={},
+            )
 
-        # init application generate entity
-        application_generate_entity = CompletionAppGenerateEntity(
-            task_id=str(uuid.uuid4()),
-            app_config=app_config,
-            model_config=ModelConfigConverter.convert(app_config),
-            inputs=message.inputs,
-            query=message.query,
-            files=file_objs,
-            user_id=user.id,
-            stream=stream,
-            invoke_from=invoke_from,
-            extras={}
-        )
+            # init generate records
+            (conversation, message) = self._init_generate_records(
+                application_generate_entity,
+                session=session,
+            )
 
-        # init generate records
-        (
-            conversation,
-            message
-        ) = self._init_generate_records(application_generate_entity)
+            # init queue manager
+            queue_manager = MessageBasedAppQueueManager(
+                task_id=application_generate_entity.task_id,
+                user_id=application_generate_entity.user_id,
+                invoke_from=application_generate_entity.invoke_from,
+                conversation_id=conversation.id,
+                app_mode=conversation.mode,
+                message_id=message.id,
+            )
 
-        # init queue manager
-        queue_manager = MessageBasedAppQueueManager(
-            task_id=application_generate_entity.task_id,
-            user_id=application_generate_entity.user_id,
-            invoke_from=application_generate_entity.invoke_from,
-            conversation_id=conversation.id,
-            app_mode=conversation.mode,
-            message_id=message.id
-        )
+            context = contextvars.copy_context()
 
-        # new thread
-        worker_thread = threading.Thread(target=self._generate_worker, kwargs={
-            'flask_app': current_app._get_current_object(),
-            'application_generate_entity': application_generate_entity,
-            'queue_manager': queue_manager,
-            'message_id': message.id,
-        })
+            # new thread with request context
+            @copy_current_request_context
+            def worker_with_context():
+                return context.run(
+                    self._generate_worker,
+                    flask_app=current_app._get_current_object(),  # type: ignore
+                    application_generate_entity=application_generate_entity,
+                    queue_manager=queue_manager,
+                    message_id=message.id,
+                )
 
-        worker_thread.start()
+            worker_thread = threading.Thread(target=worker_with_context)
 
-        # return response or stream generator
-        response = self._handle_response(
-            application_generate_entity=application_generate_entity,
-            queue_manager=queue_manager,
-            conversation=conversation,
-            message=message,
-            user=user,
-            stream=stream
-        )
+            worker_thread.start()
 
-        return CompletionAppGenerateResponseConverter.convert(
-            response=response,
-            invoke_from=invoke_from
-        )
+            # return response or stream generator
+            response = self._handle_response(
+                application_generate_entity=application_generate_entity,
+                queue_manager=queue_manager,
+                conversation=conversation,
+                message=message,
+                user=user,
+                stream=stream,
+            )
+
+            return CompletionAppGenerateResponseConverter.convert(response=response, invoke_from=invoke_from)

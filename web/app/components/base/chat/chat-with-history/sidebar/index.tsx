@@ -1,24 +1,40 @@
-import {
-  useCallback,
-  useState,
-} from 'react'
-import { useTranslation } from 'react-i18next'
-import { useChatWithHistoryContext } from '../context'
-import List from './list'
-import AppIcon from '@/app/components/base/app-icon'
-import Button from '@/app/components/base/button'
-import { Edit05 } from '@/app/components/base/icons/src/vender/line/general'
 import type { ConversationItem } from '@/models/share'
-import Confirm from '@/app/components/base/confirm'
-import RenameModal from '@/app/components/share/chat/sidebar/rename-modal'
+import {
+  AlertDialog,
+  AlertDialogActions,
+  AlertDialogCancelButton,
+  AlertDialogConfirmButton,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from '@langgenius/dify-ui/alert-dialog'
+import { Button } from '@langgenius/dify-ui/button'
+import { cn } from '@langgenius/dify-ui/cn'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { useSuspenseQuery } from '@tanstack/react-query'
+import { useCallback, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import AppIcon from '@/app/components/base/app-icon'
+import List from '@/app/components/base/chat/chat-with-history/sidebar/list'
+import RenameModal from '@/app/components/base/chat/chat-with-history/sidebar/rename-modal'
+import { DifyLogo } from '@/app/components/base/logo/dify-logo'
+import MenuDropdown from '@/app/components/share/text-generation/menu-dropdown'
+import { systemFeaturesQueryOptions } from '@/features/system-features/client'
+import { useChatWithHistoryContext } from '../context'
 
-const Sidebar = () => {
+type Props = Readonly<{
+  isPanel?: boolean
+  panelVisible?: boolean
+}>
+
+const Sidebar = ({ isPanel }: Props) => {
   const { t } = useTranslation()
   const {
+    isInstalledApp,
     appData,
+    handleNewConversation,
     pinnedConversationList,
     conversationList,
-    handleNewConversation,
     currentConversationId,
     handleChangeConversation,
     handlePinConversation,
@@ -26,114 +42,184 @@ const Sidebar = () => {
     conversationRenaming,
     handleRenameConversation,
     handleDeleteConversation,
+    sidebarCollapseState,
+    handleSidebarCollapse,
     isMobile,
+    isResponding,
   } = useChatWithHistoryContext()
+  const isSidebarCollapsed = sidebarCollapseState
+  const { data: systemFeatures } = useSuspenseQuery(systemFeaturesQueryOptions())
   const [showConfirm, setShowConfirm] = useState<ConversationItem | null>(null)
   const [showRename, setShowRename] = useState<ConversationItem | null>(null)
 
-  const handleOperate = useCallback((type: string, item: ConversationItem) => {
-    if (type === 'pin')
-      handlePinConversation(item.id)
+  const handleOperate = useCallback(
+    (type: string, item: ConversationItem) => {
+      if (type === 'pin') handlePinConversation(item.id)
 
-    if (type === 'unpin')
-      handleUnpinConversation(item.id)
+      if (type === 'unpin') handleUnpinConversation(item.id)
 
-    if (type === 'delete')
-      setShowConfirm(item)
+      if (type === 'delete') setShowConfirm(item)
 
-    if (type === 'rename')
-      setShowRename(item)
-  }, [handlePinConversation, handleUnpinConversation])
+      if (type === 'rename') setShowRename(item)
+    },
+    [handlePinConversation, handleUnpinConversation],
+  )
   const handleCancelConfirm = useCallback(() => {
     setShowConfirm(null)
   }, [])
   const handleDelete = useCallback(() => {
-    if (showConfirm)
-      handleDeleteConversation(showConfirm.id, { onSuccess: handleCancelConfirm })
+    if (showConfirm) handleDeleteConversation(showConfirm.id, { onSuccess: handleCancelConfirm })
   }, [showConfirm, handleDeleteConversation, handleCancelConfirm])
   const handleCancelRename = useCallback(() => {
     setShowRename(null)
   }, [])
-  const handleRename = useCallback((newName: string) => {
-    if (showRename)
-      handleRenameConversation(showRename.id, newName, { onSuccess: handleCancelRename })
-  }, [showRename, handleRenameConversation, handleCancelRename])
+  const handleRename = useCallback(
+    (newName: string) => {
+      if (showRename)
+        handleRenameConversation(showRename.id, newName, { onSuccess: handleCancelRename })
+    },
+    [showRename, handleRenameConversation, handleCancelRename],
+  )
+  const pinnedTitle = t(($) => $['chat.pinnedTitle'], { ns: 'share' }) || ''
+  const deleteConversationContent =
+    t(($) => $['chat.deleteConversation.content'], { ns: 'share' }) || ''
 
   return (
-    <div className='shrink-0 h-full flex flex-col w-[240px] border-r border-r-gray-100'>
-      {
-        !isMobile && (
-          <div className='shrink-0 flex p-4'>
-            <AppIcon
-              className='mr-3'
-              size='small'
-              icon={appData?.site.icon}
-              background={appData?.site.icon_background}
-            />
-            <div className='py-1 text-base font-semibold text-gray-800'>
-              {appData?.site.title}
-            </div>
-          </div>
-        )
-      }
-      <div className='shrink-0 p-4'>
+    <div
+      className={cn(
+        'flex w-full grow flex-col',
+        isPanel &&
+          'rounded-xl border-[0.5px] border-components-panel-border-subtle bg-components-panel-bg shadow-lg',
+      )}
+    >
+      <div className={cn('flex shrink-0 items-center gap-3 p-3 pr-2')}>
+        <div className="shrink-0">
+          <AppIcon
+            size="large"
+            iconType={appData?.site.icon_type}
+            icon={appData?.site.icon}
+            background={appData?.site.icon_background}
+            imageUrl={appData?.site.icon_url}
+          />
+        </div>
+        <div className={cn('grow truncate system-md-semibold text-text-secondary')}>
+          {appData?.site.title}
+        </div>
+        {!isMobile && isSidebarCollapsed && (
+          <IconButton
+            aria-label={t(($) => $['sidebar.expandSidebar'], { ns: 'layout' })}
+            size="lg"
+            onClick={() => handleSidebarCollapse(false)}
+          >
+            <span aria-hidden className="i-ri-expand-right-line h-4.5 w-4.5" />
+          </IconButton>
+        )}
+        {!isMobile && !isSidebarCollapsed && (
+          <IconButton
+            aria-label={t(($) => $['sidebar.collapseSidebar'], { ns: 'layout' })}
+            size="lg"
+            onClick={() => handleSidebarCollapse(true)}
+          >
+            <span aria-hidden className="i-ri-layout-left-2-line h-4.5 w-4.5" />
+          </IconButton>
+        )}
+      </div>
+      <div className="shrink-0 px-3 py-4">
         <Button
-          className='justify-start px-3 py-0 w-full h-9 text-sm font-medium text-primary-600'
+          variant="secondary-accent"
+          disabled={isResponding}
+          className="w-full justify-center"
           onClick={handleNewConversation}
         >
-          <Edit05 className='mr-2 w-4 h-4' />
-          {t('share.chat.newChat')}
+          <span aria-hidden className="i-ri-edit-box-line size-4" />
+          {t(($) => $['chat.newChat'], { ns: 'share' })}
         </Button>
       </div>
-      <div className='grow px-4 py-2 overflow-y-auto'>
-        {
-          !!pinnedConversationList.length && (
-            <div className='mb-4'>
-              <List
-                isPin
-                title={t('share.chat.pinnedTitle') || ''}
-                list={pinnedConversationList}
-                onChangeConversation={handleChangeConversation}
-                onOperate={handleOperate}
-                currentConversationId={currentConversationId}
-              />
-            </div>
-          )
-        }
-        {
-          !!conversationList.length && (
+      <div className="h-0 grow space-y-2 overflow-y-auto px-3 pt-4">
+        {/* pinned list */}
+        {!!pinnedConversationList.length && (
+          <div className="mb-4">
             <List
-              title={(pinnedConversationList.length && t('share.chat.unpinnedTitle')) || ''}
-              list={conversationList}
+              isPin
+              title={pinnedTitle}
+              list={pinnedConversationList}
               onChangeConversation={handleChangeConversation}
               onOperate={handleOperate}
               currentConversationId={currentConversationId}
             />
-          )
-        }
+          </div>
+        )}
+        {!!conversationList.length && (
+          <List
+            title={
+              (pinnedConversationList.length &&
+                t(($) => $['chat.unpinnedTitle'], { ns: 'share' })) ||
+              ''
+            }
+            list={conversationList}
+            onChangeConversation={handleChangeConversation}
+            onOperate={handleOperate}
+            currentConversationId={currentConversationId}
+          />
+        )}
       </div>
-      <div className='px-4 pb-4 text-xs text-gray-400'>
-        © {appData?.site.copyright || appData?.site.title} {(new Date()).getFullYear()}
+      <div className="flex shrink-0 items-center justify-between p-3">
+        <MenuDropdown hideLogout={isInstalledApp} placement="top-start" data={appData?.site} />
+        {/* powered by */}
+        <div className="shrink-0">
+          {!appData?.custom_config?.remove_webapp_brand && (
+            <div className={cn('flex shrink-0 items-center gap-1.5 px-1')}>
+              <div className="system-2xs-medium-uppercase text-text-tertiary">
+                {t(($) => $['chat.poweredBy'], { ns: 'share' })}
+              </div>
+              {systemFeatures.branding.enabled && systemFeatures.branding.workspace_logo ? (
+                <img
+                  src={systemFeatures.branding.workspace_logo}
+                  alt="logo"
+                  className="block h-5 w-auto"
+                />
+              ) : appData?.custom_config?.replace_webapp_logo ? (
+                <img
+                  src={`${appData?.custom_config?.replace_webapp_logo}`}
+                  alt="logo"
+                  className="block h-5 w-auto"
+                />
+              ) : (
+                <DifyLogo alt="Dify" size="small" />
+              )}
+            </div>
+          )}
+        </div>
+        <AlertDialog open={!!showConfirm} onOpenChange={(open) => !open && handleCancelConfirm()}>
+          <AlertDialogContent>
+            <div className="flex flex-col gap-2 px-6 pt-6 pb-4">
+              <AlertDialogTitle className="w-full truncate title-2xl-semi-bold text-text-primary">
+                {t(($) => $['chat.deleteConversation.title'], { ns: 'share' })}
+              </AlertDialogTitle>
+              <AlertDialogDescription className="w-full system-md-regular wrap-break-word whitespace-pre-wrap text-text-tertiary">
+                {deleteConversationContent}
+              </AlertDialogDescription>
+            </div>
+            <AlertDialogActions>
+              <AlertDialogCancelButton>
+                {t(($) => $['operation.cancel'], { ns: 'common' })}
+              </AlertDialogCancelButton>
+              <AlertDialogConfirmButton onClick={handleDelete}>
+                {t(($) => $['operation.confirm'], { ns: 'common' })}
+              </AlertDialogConfirmButton>
+            </AlertDialogActions>
+          </AlertDialogContent>
+        </AlertDialog>
+        {showRename && (
+          <RenameModal
+            isShow
+            onClose={handleCancelRename}
+            saveLoading={conversationRenaming}
+            name={showRename?.name || ''}
+            onSave={handleRename}
+          />
+        )}
       </div>
-      {!!showConfirm && (
-        <Confirm
-          title={t('share.chat.deleteConversation.title')}
-          content={t('share.chat.deleteConversation.content') || ''}
-          isShow
-          onClose={handleCancelConfirm}
-          onCancel={handleCancelConfirm}
-          onConfirm={handleDelete}
-        />
-      )}
-      {showRename && (
-        <RenameModal
-          isShow
-          onClose={handleCancelRename}
-          saveLoading={conversationRenaming}
-          name={showRename?.name || ''}
-          onSave={handleRename}
-        />
-      )}
     </div>
   )
 }

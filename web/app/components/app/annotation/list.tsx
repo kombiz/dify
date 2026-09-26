@@ -1,98 +1,164 @@
 'use client'
-import type { FC } from 'react'
-import React from 'react'
-import { useTranslation } from 'react-i18next'
-import cn from 'classnames'
-import dayjs from 'dayjs'
-import { Edit02, Trash03 } from '../../base/icons/src/vender/line/general'
-import s from './style.module.css'
 import type { AnnotationItem } from './type'
+import { Checkbox } from '@langgenius/dify-ui/checkbox'
+import { CheckboxGroup } from '@langgenius/dify-ui/checkbox-group'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import * as React from 'react'
+import { useTranslation } from 'react-i18next'
+import useTimestamp from '@/hooks/use-timestamp'
+import BatchAction from './batch-action'
 import RemoveAnnotationConfirmModal from './remove-annotation-confirm-modal'
 
-type Props = {
+type Props = Readonly<{
   list: AnnotationItem[]
-  onRemove: (id: string) => void
   onView: (item: AnnotationItem) => void
+  onRemove: (id: string) => void
+  selectedIds: string[]
+  onSelectedIdsChange: (selectedIds: string[]) => void
+  onBatchDelete: () => Promise<void>
+}>
+
+type AnnotationTableRowProps = {
+  item: AnnotationItem
+  formattedCreatedAt: string
+  onView: (item: AnnotationItem) => void
+  onRemoveClick: (id: string) => void
 }
 
-const List: FC<Props> = ({
+function AnnotationTableRow({
+  item,
+  formattedCreatedAt,
+  onView,
+  onRemoveClick,
+}: AnnotationTableRowProps) {
+  const { t } = useTranslation()
+  const questionId = React.useId()
+
+  return (
+    <tr
+      className="cursor-pointer border-b border-divider-subtle hover:bg-background-default-hover"
+      onClick={() => onView(item)}
+    >
+      <td className="w-12 px-2 align-middle" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center">
+          <Checkbox className="shrink-0" value={item.id} aria-labelledby={questionId} />
+        </div>
+      </td>
+      <td className="max-w-62.5 truncate p-3 pr-2" title={item.question}>
+        <span id={questionId}>{item.question}</span>
+      </td>
+      <td className="max-w-62.5 truncate p-3 pr-2" title={item.answer}>
+        {item.answer}
+      </td>
+      <td className="p-3 pr-2">{formattedCreatedAt}</td>
+      <td className="p-3 pr-2">{item.hit_count}</td>
+      <td className="w-24 p-3 pr-2" onClick={(e) => e.stopPropagation()}>
+        <div className="flex space-x-1 text-text-tertiary">
+          <IconButton
+            aria-label={t(($) => $['feature.annotation.edit'], { ns: 'appDebug' })}
+            onClick={() => onView(item)}
+          >
+            <span aria-hidden className="i-ri-edit-line size-4" />
+          </IconButton>
+          <IconButton
+            aria-label={t(($) => $['feature.annotation.remove'], { ns: 'appDebug' })}
+            onClick={() => onRemoveClick(item.id)}
+          >
+            <span aria-hidden className="i-ri-delete-bin-line size-4" />
+          </IconButton>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+export function List({
   list,
   onView,
   onRemove,
-}) => {
+  selectedIds,
+  onSelectedIdsChange,
+  onBatchDelete,
+}: Props) {
   const { t } = useTranslation()
+  const { formatTime } = useTimestamp()
   const [currId, setCurrId] = React.useState<string | null>(null)
   const [showConfirmDelete, setShowConfirmDelete] = React.useState(false)
+  const annotationIds = list.map((item) => item.id)
+
   return (
-    <div className='overflow-x-auto'>
-      <table className={cn(s.logTable, 'w-full min-w-[440px] border-collapse border-0 text-sm')} >
-        <thead className="h-8 leading-8 border-b border-gray-200 text-gray-500 font-bold">
-          <tr className='uppercase'>
-            <td className='whitespace-nowrap'>{t('appAnnotation.table.header.question')}</td>
-            <td className='whitespace-nowrap'>{t('appAnnotation.table.header.answer')}</td>
-            <td className='whitespace-nowrap'>{t('appAnnotation.table.header.createdAt')}</td>
-            <td className='whitespace-nowrap'>{t('appAnnotation.table.header.hits')}</td>
-            <td className='whitespace-nowrap w-[96px]'>{t('appAnnotation.table.header.actions')}</td>
-          </tr>
-        </thead>
-        <tbody className="text-gray-500">
-          {list.map(item => (
-            <tr
-              key={item.id}
-              className={'border-b border-gray-200 h-8 hover:bg-gray-50 cursor-pointer'}
-              onClick={
-                () => {
-                  onView(item)
-                }
-              }
-            >
-              <td
-                className='whitespace-nowrap overflow-hidden text-ellipsis max-w-[250px]'
-                title={item.question}
-              >{item.question}</td>
-              <td
-                className='whitespace-nowrap overflow-hidden text-ellipsis max-w-[250px]'
-                title={item.answer}
-              >{item.answer}</td>
-              <td>{dayjs(item.created_at * 1000).format('YYYY-MM-DD HH:mm')}</td>
-              <td>{item.hit_count}</td>
-              <td className='w-[96px]' onClick={e => e.stopPropagation()}>
-                {/* Actions */}
-                <div className='flex space-x-2 text-gray-500'>
-                  <div
-                    className='p-1 cursor-pointer rounded-md hover:bg-black/5'
-                    onClick={
-                      () => {
-                        onView(item)
-                      }
-                    }
-                  >
-                    <Edit02 className='w-4 h-4' />
+    <>
+      <div className="relative mt-2 grow overflow-x-auto">
+        <CheckboxGroup
+          value={selectedIds}
+          onValueChange={onSelectedIdsChange}
+          allValues={annotationIds}
+        >
+          <table className="w-full min-w-110 border-collapse border-0">
+            <thead className="system-xs-medium-uppercase text-text-tertiary">
+              <tr>
+                <td className="w-12 rounded-l-lg bg-background-section-burn px-2 align-middle whitespace-nowrap">
+                  <div className="flex items-center">
+                    <Checkbox
+                      className="shrink-0"
+                      parent
+                      aria-label={t(($) => $['operation.selectAll'], { ns: 'common' })}
+                    />
                   </div>
-                  <div
-                    className='p-1 cursor-pointer rounded-md hover:bg-black/5'
-                    onClick={() => {
-                      setCurrId(item.id)
-                      setShowConfirmDelete(true)
-                    }}
-                  >
-                    <Trash03 className='w-4 h-4' />
-                  </div>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <RemoveAnnotationConfirmModal
-        isShow={showConfirmDelete}
-        onHide={() => setShowConfirmDelete(false)}
-        onRemove={() => {
-          onRemove(currId as string)
-          setShowConfirmDelete(false)
-        }}
-      />
-    </div>
+                </td>
+                <td className="w-5 bg-background-section-burn pr-1 pl-2 whitespace-nowrap">
+                  {t(($) => $['table.header.question'], { ns: 'appAnnotation' })}
+                </td>
+                <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                  {t(($) => $['table.header.answer'], { ns: 'appAnnotation' })}
+                </td>
+                <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                  {t(($) => $['table.header.createdAt'], { ns: 'appAnnotation' })}
+                </td>
+                <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                  {t(($) => $['table.header.hits'], { ns: 'appAnnotation' })}
+                </td>
+                <td className="w-24 rounded-r-lg bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                  {t(($) => $['table.header.actions'], { ns: 'appAnnotation' })}
+                </td>
+              </tr>
+            </thead>
+            <tbody className="system-sm-regular text-text-secondary">
+              {list.map((item) => (
+                <AnnotationTableRow
+                  key={item.id}
+                  item={item}
+                  formattedCreatedAt={formatTime(
+                    item.created_at,
+                    t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+                  )}
+                  onView={onView}
+                  onRemoveClick={(id) => {
+                    setCurrId(id)
+                    setShowConfirmDelete(true)
+                  }}
+                />
+              ))}
+            </tbody>
+          </table>
+        </CheckboxGroup>
+        <RemoveAnnotationConfirmModal
+          isShow={showConfirmDelete}
+          onHide={() => setShowConfirmDelete(false)}
+          onRemove={() => {
+            onRemove(currId as string)
+            setShowConfirmDelete(false)
+          }}
+        />
+      </div>
+      {selectedIds.length > 0 && (
+        <BatchAction
+          className="absolute bottom-20 left-0 z-20"
+          selectedIds={selectedIds}
+          onBatchDelete={onBatchDelete}
+          onSelectedIdsChange={onSelectedIdsChange}
+        />
+      )}
+    </>
   )
 }
-export default React.memo(List)

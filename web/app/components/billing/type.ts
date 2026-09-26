@@ -1,73 +1,20 @@
-export enum Plan {
-  sandbox = 'sandbox',
-  professional = 'professional',
-  team = 'team',
-  enterprise = 'enterprise',
-}
+type DocumentProcessingPriority = 'standard' | 'priority' | 'top-priority'
 
-export enum Priority {
-  standard = 'standard',
-  priority = 'priority',
-  topPriority = 'top-priority',
-}
 export type PlanInfo = {
   level: number
   price: number
   modelProviders: string
+  teamWorkspace: number
   teamMembers: number
   buildApps: number
-  vectorSpace: number
+  documents: number
+  vectorSpace: string
   documentsUploadQuota: number
-  documentProcessingPriority: Priority
+  documentsRequestQuota: number
+  apiRateLimit: number
+  documentProcessingPriority: DocumentProcessingPriority
   logHistory: number
-  customTools: string | number
-  messageRequest: {
-    en: string | number
-    zh: string | number
-  }
+  messageRequest: number
+  triggerEvents: number
   annotatedResponse: number
-}
-
-export type UsagePlanInfo = Pick<PlanInfo, 'vectorSpace' | 'buildApps' | 'teamMembers' | 'annotatedResponse'>
-
-export enum DocumentProcessingPriority {
-  standard = 'standard',
-  priority = 'priority',
-  topPriority = 'top-priority',
-}
-
-export type CurrentPlanInfoBackend = {
-  billing: {
-    enabled: boolean
-    subscription: {
-      plan: Plan
-    }
-  }
-  members: {
-    size: number
-    limit: number // total. 0 means unlimited
-  }
-  apps: {
-    size: number
-    limit: number // total. 0 means unlimited
-  }
-  vector_space: {
-    size: number
-    limit: number // total. 0 means unlimited
-  }
-  annotation_quota_limit: {
-    size: number
-    limit: number // total. 0 means unlimited
-  }
-  docs_processing: DocumentProcessingPriority
-  can_replace_logo: boolean
-}
-
-export type SubscriptionItem = {
-  plan: Plan
-  url: string
-}
-
-export type SubscriptionUrlsBackend = {
-  url: string
 }

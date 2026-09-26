@@ -1,126 +1,107 @@
+'use client'
+import type { InstalledAppResponse } from '@dify/contracts/api/console/installed-apps/types.gen'
 import type { FC } from 'react'
-import {
-  useEffect,
-  useState,
-} from 'react'
-import { useAsyncEffect } from 'ahooks'
-import {
-  ChatWithHistoryContext,
-  useChatWithHistoryContext,
-} from './context'
-import { useChatWithHistory } from './hooks'
-import Sidebar from './sidebar'
-import HeaderInMobile from './header-in-mobile'
-import ConfigPanel from './config-panel'
-import ChatWrapper from './chat-wrapper'
-import type { InstalledApp } from '@/models/explore'
+import type { ChatProps } from '../chat'
+import { cn } from '@langgenius/dify-ui/cn'
+import { useEffect, useState } from 'react'
 import Loading from '@/app/components/base/loading'
 import useBreakpoints, { MediaType } from '@/hooks/use-breakpoints'
-import { checkOrSetAccessToken } from '@/app/components/share/utils'
-import AppUnavailable from '@/app/components/base/app-unavailable'
+import useDocumentTitle from '@/hooks/use-document-title'
+import { createTheme } from '../embedded-chatbot/theme/theme'
+import ChatWrapper from './chat-wrapper'
+import { ChatWithHistoryContext, useChatWithHistoryContext } from './context'
+import Header from './header'
+import HeaderInMobile from './header-in-mobile'
+import { useChatWithHistory } from './hooks'
+import Sidebar from './sidebar'
 
 type ChatWithHistoryProps = {
   className?: string
 }
-const ChatWithHistory: FC<ChatWithHistoryProps> = ({
-  className,
-}) => {
-  const {
-    appInfoError,
-    appData,
-    appInfoLoading,
-    appPrevChatList,
-    showConfigPanelBeforeChat,
-    appChatListDataLoading,
-    chatShouldReloadKey,
-    isMobile,
-  } = useChatWithHistoryContext()
-
-  const chatReady = (!showConfigPanelBeforeChat || !!appPrevChatList.length)
-  const customConfig = appData?.custom_config
+const ChatWithHistory: FC<ChatWithHistoryProps> = ({ className }) => {
+  const { appData, appChatListDataLoading, chatShouldReloadKey, isMobile, sidebarCollapseState } =
+    useChatWithHistoryContext()
+  const isSidebarCollapsed = sidebarCollapseState
   const site = appData?.site
 
+  const [showSidePanel, setShowSidePanel] = useState(false)
+
   useEffect(() => {
-    if (site) {
-      if (customConfig)
-        document.title = `${site.title}`
-      else
-        document.title = `${site.title} - Powered by Dify`
-    }
-  }, [site, customConfig])
+    if (!isSidebarCollapsed) setShowSidePanel(false)
+  }, [isSidebarCollapsed])
 
-  if (appInfoLoading) {
-    return (
-      <Loading type='app' />
-    )
-  }
-
-  if (appInfoError) {
-    return (
-      <AppUnavailable />
-    )
-  }
+  useDocumentTitle(site?.title || 'Chat')
 
   return (
-    <div className={`h-full flex bg-white ${className} ${isMobile && 'flex-col'}`}>
-      {
-        !isMobile && (
+    <div
+      className={cn('flex h-full bg-background-default-burn', isMobile && 'flex-col', className)}
+    >
+      {!isMobile && (
+        <div
+          className={cn(
+            'flex w-59 flex-col p-1 pr-0 transition-all duration-200 ease-in-out',
+            isSidebarCollapsed && 'w-0 overflow-hidden p-0!',
+          )}
+        >
           <Sidebar />
-        )
-      }
-      {
-        isMobile && (
-          <HeaderInMobile />
-        )
-      }
-      <div className={`grow overflow-hidden ${showConfigPanelBeforeChat && !appPrevChatList.length && 'flex items-center justify-center'}`}>
-        {
-          showConfigPanelBeforeChat && !appChatListDataLoading && !appPrevChatList.length && (
-            <div className={`flex w-full items-center justify-center h-full ${isMobile && 'px-4'}`}>
-              <ConfigPanel />
-            </div>
-          )
-        }
-        {
-          appChatListDataLoading && chatReady && (
-            <Loading type='app' />
-          )
-        }
-        {
-          chatReady && !appChatListDataLoading && (
-            <ChatWrapper key={chatShouldReloadKey} />
-          )
-        }
+        </div>
+      )}
+      {isMobile && <HeaderInMobile />}
+      <div className={cn('relative grow p-2', isMobile && 'h-[calc(100%-56px)] p-0')}>
+        {isSidebarCollapsed && (
+          <div
+            className={cn(
+              'absolute top-0 z-20 flex h-full w-[256px] flex-col p-2 transition-all duration-500 ease-in-out',
+              showSidePanel ? 'left-0' : '-left-62',
+            )}
+            onMouseEnter={() => setShowSidePanel(true)}
+            onMouseLeave={() => setShowSidePanel(false)}
+          >
+            <Sidebar isPanel panelVisible={showSidePanel} />
+          </div>
+        )}
+        <div
+          className={cn(
+            'flex h-full flex-col overflow-hidden border-[0,5px] border-components-panel-border-subtle bg-chatbot-bg',
+            isMobile ? 'rounded-t-2xl' : 'rounded-2xl',
+          )}
+        >
+          {!isMobile && <Header />}
+          {appChatListDataLoading && <Loading type="app" />}
+          {!appChatListDataLoading && <ChatWrapper key={chatShouldReloadKey} />}
+        </div>
       </div>
     </div>
   )
 }
 
-export type ChatWithHistoryWrapProps = {
-  installedAppInfo?: InstalledApp
+type ChatWithHistoryWrapProps = {
+  installedAppInfo?: InstalledAppResponse
   className?: string
+  isNewAgent?: boolean
+  renderAgentContent?: ChatProps['renderAgentContent']
 }
 const ChatWithHistoryWrap: FC<ChatWithHistoryWrapProps> = ({
   installedAppInfo,
   className,
+  isNewAgent = false,
+  renderAgentContent,
 }) => {
   const media = useBreakpoints()
   const isMobile = media === MediaType.mobile
 
   const {
-    appInfoError,
-    appInfoLoading,
     appData,
     appParams,
     appMeta,
     appChatListDataLoading,
     currentConversationId,
     currentConversationItem,
-    appPrevChatList,
+    appPrevChatTree,
     pinnedConversationList,
     conversationList,
-    showConfigPanelBeforeChat,
     newConversationInputs,
+    newConversationInputsRef,
     handleNewConversationInputsChange,
     inputsForms,
     handleNewConversation,
@@ -137,41 +118,68 @@ const ChatWithHistoryWrap: FC<ChatWithHistoryWrapProps> = ({
     appId,
     handleFeedback,
     currentChatInstanceRef,
+    sidebarCollapseState,
+    handleSidebarCollapse,
+    clearChatList,
+    setClearChatList,
+    isResponding,
+    setIsResponding,
+    currentConversationInputs,
+    setCurrentConversationInputs,
+    allInputsHidden,
+    initUserVariables,
   } = useChatWithHistory(installedAppInfo)
+  const theme = createTheme(
+    appData?.site?.chat_color_theme ?? null,
+    appData?.site?.chat_color_theme_inverted ?? false,
+  )
 
   return (
-    <ChatWithHistoryContext.Provider value={{
-      appInfoError,
-      appInfoLoading,
-      appData,
-      appParams,
-      appMeta,
-      appChatListDataLoading,
-      currentConversationId,
-      currentConversationItem,
-      appPrevChatList,
-      pinnedConversationList,
-      conversationList,
-      showConfigPanelBeforeChat,
-      newConversationInputs,
-      handleNewConversationInputsChange,
-      inputsForms,
-      handleNewConversation,
-      handleStartChat,
-      handleChangeConversation,
-      handlePinConversation,
-      handleUnpinConversation,
-      handleDeleteConversation,
-      conversationRenaming,
-      handleRenameConversation,
-      handleNewConversationCompleted,
-      chatShouldReloadKey,
-      isMobile,
-      isInstalledApp,
-      appId,
-      handleFeedback,
-      currentChatInstanceRef,
-    }}>
+    <ChatWithHistoryContext.Provider
+      value={{
+        appData,
+        appParams,
+        appMeta,
+        appChatListDataLoading,
+        currentConversationId,
+        currentConversationItem,
+        appPrevChatTree,
+        pinnedConversationList,
+        conversationList,
+        newConversationInputs,
+        newConversationInputsRef,
+        handleNewConversationInputsChange,
+        inputsForms,
+        handleNewConversation,
+        handleStartChat,
+        handleChangeConversation,
+        handlePinConversation,
+        handleUnpinConversation,
+        handleDeleteConversation,
+        conversationRenaming,
+        handleRenameConversation,
+        handleNewConversationCompleted,
+        chatShouldReloadKey,
+        isMobile,
+        isInstalledApp,
+        appId,
+        handleFeedback,
+        currentChatInstanceRef,
+        theme,
+        sidebarCollapseState,
+        handleSidebarCollapse,
+        clearChatList,
+        setClearChatList,
+        isResponding,
+        setIsResponding,
+        currentConversationInputs,
+        setCurrentConversationInputs,
+        allInputsHidden,
+        initUserVariables,
+        isNewAgent,
+        renderAgentContent,
+      }}
+    >
       <ChatWithHistory className={className} />
     </ChatWithHistoryContext.Provider>
   )
@@ -180,41 +188,15 @@ const ChatWithHistoryWrap: FC<ChatWithHistoryWrapProps> = ({
 const ChatWithHistoryWrapWithCheckToken: FC<ChatWithHistoryWrapProps> = ({
   installedAppInfo,
   className,
+  isNewAgent,
+  renderAgentContent,
 }) => {
-  const [inited, setInited] = useState(false)
-  const [appUnavailable, setAppUnavailable] = useState<boolean>(false)
-  const [isUnknwonReason, setIsUnknwonReason] = useState<boolean>(false)
-
-  useAsyncEffect(async () => {
-    if (!inited) {
-      if (!installedAppInfo) {
-        try {
-          await checkOrSetAccessToken()
-        }
-        catch (e: any) {
-          if (e.status === 404) {
-            setAppUnavailable(true)
-          }
-          else {
-            setIsUnknwonReason(true)
-            setAppUnavailable(true)
-          }
-        }
-      }
-      setInited(true)
-    }
-  }, [])
-
-  if (appUnavailable)
-    return <AppUnavailable isUnknwonReason={isUnknwonReason} />
-
-  if (!inited)
-    return null
-
   return (
     <ChatWithHistoryWrap
       installedAppInfo={installedAppInfo}
       className={className}
+      isNewAgent={isNewAgent}
+      renderAgentContent={renderAgentContent}
     />
   )
 }

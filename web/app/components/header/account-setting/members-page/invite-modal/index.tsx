@@ -1,160 +1,222 @@
 'use client'
-import { Fragment, useCallback, useMemo, useState } from 'react'
-import { useContext } from 'use-context-selector'
-import { XMarkIcon } from '@heroicons/react/24/outline'
+import type { MemberInviteResponse } from '@dify/contracts/api/console/workspaces/types.gen'
+import type { ReactElement } from 'react'
+import type { EmailRecipient } from './email-recipients'
+import { Button } from '@langgenius/dify-ui/button'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+} from '@langgenius/dify-ui/dialog'
+import { Form } from '@langgenius/dify-ui/form'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAtomValue } from 'jotai'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ReactMultiEmail } from 'react-multi-email'
-import { Listbox, Transition } from '@headlessui/react'
-import { CheckIcon } from '@heroicons/react/20/solid'
-import cn from 'classnames'
-import s from './index.module.css'
-import Modal from '@/app/components/base/modal'
-import Button from '@/app/components/base/button'
-import { inviteMember } from '@/service/common'
-import { emailRegex } from '@/config'
-import { ToastContext } from '@/app/components/base/toast'
-import type { InvitationResult } from '@/models/common'
-import I18n from '@/context/i18n'
+import { useLocale } from '@/context/i18n'
+import { deploymentEditionAtom } from '@/features/system-features/state'
+import { consoleQuery } from '@/service/console'
+import { commonQueryKeys } from '@/service/use-common'
+import { mergeEmailRecipients } from './email-recipients'
+import { EmailRecipientsField } from './email-recipients-field'
+import { getInviteErrorCode } from './invite-error'
+import { RoleSelector } from './role-selector'
 
-import 'react-multi-email/dist/style.css'
-type IInviteModalProps = {
-  onCancel: () => void
-  onSend: (invitationResults: InvitationResult[]) => void
+type InviteModalProps = {
+  open: boolean
+  trigger: ReactElement
+  isEmailSetup: boolean
+  onOpenChange: (open: boolean) => void
+  onSend: (invitationResults: MemberInviteResponse['invitation_results']) => void
 }
 
-const InviteModal = ({
-  onCancel,
-  onSend,
-}: IInviteModalProps) => {
+type InviteFieldName = 'emails' | 'role'
+type InviteFormValues = {
+  emails: string
+  role: string
+}
+type SubmissionError =
+  | { kind: 'fields'; errors: Partial<Record<InviteFieldName, string>> }
+  | { kind: 'form'; message: string }
+  | null
+
+type InviteFormProps = Omit<InviteModalProps, 'open' | 'trigger'>
+
+function InviteForm({ isEmailSetup, onOpenChange, onSend }: InviteFormProps) {
   const { t } = useTranslation()
-  const [emails, setEmails] = useState<string[]>([])
-  const { notify } = useContext(ToastContext)
+  const locale = useLocale()
+  const queryClient = useQueryClient()
+  const deploymentEdition = useAtomValue(deploymentEditionAtom)
+  const { data: features } = useQuery(consoleQuery.features.get.queryOptions())
+  const [recipients, setRecipients] = useState<EmailRecipient[]>([])
+  const [draft, setDraft] = useState('')
+  const [submissionError, setSubmissionError] = useState<SubmissionError>(null)
+  const fieldErrors = submissionError?.kind === 'fields' ? submissionError.errors : undefined
+  // A limit of 0 means unlimited.
+  const memberLimit = features?.workspace_members.enabled
+    ? features.workspace_members
+    : deploymentEdition === 'CLOUD' && features && features.members.limit > 0
+      ? features.members
+      : undefined
+  const remainingSeats =
+    memberLimit && memberLimit.limit > 0 ? Math.max(memberLimit.limit - memberLimit.size, 0) : null
+  const effectiveRecipients = mergeEmailRecipients(recipients, draft)
+  const validRecipientCount = effectiveRecipients.filter(({ isValid }) => isValid).length
+  const exceedsRemainingSeats = remainingSeats !== null && validRecipientCount > remainingSeats
 
-  const { locale } = useContext(I18n)
+  const { mutate, isPending } = useMutation(
+    consoleQuery.workspaces.current.members.inviteEmail.post.mutationOptions({
+      context: { silent: true },
+    }),
+  )
 
-  const InvitingRoles = useMemo(() => [
-    {
-      name: 'normal',
-      description: t('common.members.normalTip'),
-    },
-    {
-      name: 'admin',
-      description: t('common.members.adminTip'),
-    },
-  ], [t])
-  const [role, setRole] = useState(InvitingRoles[0])
+  const clearEmailSubmissionError = () => {
+    setSubmissionError((error) => (error?.kind === 'fields' && error.errors.emails ? null : error))
+  }
 
-  const handleSend = useCallback(async () => {
-    if (emails.map((email: string) => emailRegex.test(email)).every(Boolean)) {
-      try {
-        const { result, invitation_results } = await inviteMember({
-          url: '/workspaces/current/members/invite-email',
-          body: { emails, role: role.name, language: locale },
-        })
+  const handleSubmit = ({ role }: InviteFormValues) => {
+    if (isPending) return
 
-        if (result === 'success') {
-          onCancel()
-          onSend(invitation_results)
-        }
-      }
-      catch (e) {}
-    }
-    else {
-      notify({ type: 'error', message: t('common.members.emailInvalid') })
-    }
-  }, [role, emails, notify, onCancel, onSend, t])
+    setRecipients(effectiveRecipients)
+    setDraft('')
+    setSubmissionError(null)
+    mutate(
+      {
+        body: {
+          emails: effectiveRecipients.map(({ value }) => value),
+          role,
+          language: locale,
+        },
+      },
+      {
+        onSuccess: (response) => {
+          void queryClient.invalidateQueries({ queryKey: consoleQuery.features.get.queryKey() })
+          void queryClient.invalidateQueries({ queryKey: commonQueryKeys.members })
+          onOpenChange(false)
+          onSend(response.invitation_results)
+        },
+        onError: (error) => {
+          switch (getInviteErrorCode(error)) {
+            case 'limit_exceeded':
+              setSubmissionError({
+                kind: 'fields',
+                errors: {
+                  emails: t(($) => $['members.inviteLimitExceeded'], { ns: 'common' }),
+                },
+              })
+              break
+            case 'invalid_role':
+              setSubmissionError({
+                kind: 'fields',
+                errors: { role: t(($) => $['members.invalidRole'], { ns: 'common' }) },
+              })
+              break
+            default:
+              setSubmissionError({
+                kind: 'form',
+                message: t(($) => $['members.inviteFailed'], { ns: 'common' }),
+              })
+          }
+        },
+      },
+    )
+  }
 
   return (
-    <div className={cn(s.wrap)}>
-      <Modal overflowVisible isShow onClose={() => {}} className={cn(s.modal)} wrapperClassName='z-20'>
-        <div className='flex justify-between mb-2'>
-          <div className='text-xl font-semibold text-gray-900'>{t('common.members.inviteTeamMember')}</div>
-          <XMarkIcon className='w-4 h-4 cursor-pointer' onClick={onCancel} />
+    <Form<InviteFormValues>
+      aria-label={t(($) => $['members.inviteTeamMember'], { ns: 'common' })}
+      errors={fieldErrors}
+      className="grid gap-5 pt-5"
+      onFormSubmit={handleSubmit}
+    >
+      {!isEmailSetup && (
+        <div className="flex items-start gap-1.5 rounded-lg bg-state-warning-hover p-2 text-text-warning">
+          <span aria-hidden="true" className="i-ri-error-warning-fill size-4 shrink-0" />
+          <span className="system-xs-medium text-text-primary">
+            {t(($) => $['members.emailNotSetup'], { ns: 'common' })}
+          </span>
         </div>
-        <div className='mb-7 text-[13px] text-gray-500'>{t('common.members.inviteTeamMemberTip')}</div>
-        <div>
-          <div className='mb-2 text-sm font-medium text-gray-900'>{t('common.members.email')}</div>
-          <div className='mb-8 h-36 flex items-stretch'>
-            <ReactMultiEmail
-              className={cn('w-full pt-2 px-3 outline-none border-none',
-                'appearance-none text-sm text-gray-900 rounded-lg overflow-y-auto',
-                s.emailsInput,
-              )}
-              autoFocus
-              emails={emails}
-              inputClassName='bg-transparent'
-              onChange={setEmails}
-              getLabel={(email, index, removeEmail) =>
-                <div data-tag key={index} className={cn(s.emailBackground)}>
-                  <div data-tag-item>{email}</div>
-                  <span data-tag-handle onClick={() => removeEmail(index)}>
-                      ×
-                  </span>
-                </div>
-              }
-              placeholder={t('common.members.emailPlaceholder') || ''}
-            />
-          </div>
-          <Listbox value={role} onChange={setRole}>
-            <div className="relative pb-6">
-              <Listbox.Button className="relative w-full py-2 pl-3 pr-10 text-left bg-gray-100 outline-none border-none appearance-none text-sm text-gray-900 rounded-lg">
-                <span className="block truncate capitalize">{t('common.members.invitedAsRole', { role: t(`common.members.${role.name}`) })}</span>
-              </Listbox.Button>
-              <Transition
-                as={Fragment}
-                leave="transition ease-in duration-200"
-                leaveFrom="opacity-200"
-                leaveTo="opacity-0"
-              >
-                <Listbox.Options className="absolute w-full py-1 my-2 overflow-auto text-base bg-white rounded-md shadow-lg max-h-60 ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
-                  {InvitingRoles.map(role =>
-                    <Listbox.Option
-                      key={role.name}
-                      className={({ active }) =>
-                        `${active ? ' bg-gray-50 rounded-xl' : ' bg-transparent'}
-                          cursor-default select-none relative py-2 px-4 mx-2 flex flex-col`
-                      }
-                      value={role}
-                    >
-                      {({ selected }) => (
-                        <div className='flex flex-row'>
-                          <span
-                            className={cn(
-                              'text-indigo-600 w-8',
-                              'flex items-center',
-                            )}
-                          >
-                            {selected && (<CheckIcon className="h-5 w-5" aria-hidden="true" />)}
-                          </span>
-                          <div className=' flex flex-col flex-grow'>
-                            <span className={`${selected ? 'font-medium' : 'font-normal'} capitalize block truncate`}>
-                              {t(`common.members.${role.name}`)}
-                            </span>
-                            <span className={`${selected ? 'font-medium' : 'font-normal'} capitalize block truncate`}>
-                              {role.description}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-                    </Listbox.Option>,
-                  )}
-                </Listbox.Options>
-              </Transition>
-            </div>
-          </Listbox>
-          <Button
-            tabIndex={0}
-            className='w-full text-sm font-medium'
-            onClick={handleSend}
-            disabled={!emails.length}
-            type='primary'
-          >
-            {t('common.members.sendInvite')}
-          </Button>
+      )}
+      <EmailRecipientsField
+        recipients={recipients}
+        draft={draft}
+        onRecipientsChange={setRecipients}
+        onDraftChange={setDraft}
+        onChange={clearEmailSubmissionError}
+        disabled={isPending}
+      />
+      <RoleSelector hasServerError={Boolean(fieldErrors?.role)} disabled={isPending} />
+      {exceedsRemainingSeats && (
+        <div
+          role="status"
+          className="flex items-start gap-1.5 rounded-lg bg-state-warning-hover p-2 body-xs-regular text-text-warning"
+        >
+          <span aria-hidden="true" className="i-ri-error-warning-line size-4 shrink-0" />
+          <span>
+            {t(($) => $['members.seatsRemaining'], {
+              ns: 'common',
+              count: remainingSeats,
+            })}
+            <span aria-hidden="true"> · </span>
+            {t(($) => $['members.recipientCountExceedsSeats'], { ns: 'common' })}
+          </span>
         </div>
-      </Modal>
-    </div>
+      )}
+      {submissionError?.kind === 'form' && (
+        <div role="alert" className="body-xs-regular text-text-destructive">
+          {submissionError.message}
+        </div>
+      )}
+      <Button type="submit" variant="primary" className="w-full" loading={isPending}>
+        {validRecipientCount > 0
+          ? t(($) => $['members.sendInviteCount'], {
+              ns: 'common',
+              count: validRecipientCount,
+            })
+          : t(($) => $['members.sendInvite'], { ns: 'common' })}
+      </Button>
+    </Form>
   )
 }
 
-export default InviteModal
+export function InviteModal({
+  open,
+  trigger,
+  isEmailSetup,
+  onOpenChange,
+  onSend,
+}: InviteModalProps) {
+  const { t } = useTranslation()
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => onOpenChange(nextOpen)}>
+      <DialogTrigger render={trigger} />
+      <DialogContent backdropProps={{ forceRender: true }}>
+        <div className="grid gap-1 pr-8">
+          <DialogTitle className="text-xl font-semibold text-text-primary">
+            {t(($) => $['members.inviteTeamMember'], { ns: 'common' })}
+          </DialogTitle>
+          <DialogDescription className="text-sm text-text-tertiary">
+            {t(($) => $['members.inviteTeamMemberTip'], { ns: 'common' })}
+          </DialogDescription>
+        </div>
+        <InviteForm isEmailSetup={isEmailSetup} onOpenChange={onOpenChange} onSend={onSend} />
+        <DialogClose
+          render={
+            <IconButton
+              aria-label={t(($) => $['operation.close'], { ns: 'common' })}
+              size="lg"
+              className="absolute inset-e-6 top-6"
+            >
+              <span aria-hidden className="i-ri-close-line size-4" />
+            </IconButton>
+          }
+        />
+      </DialogContent>
+    </Dialog>
+  )
+}

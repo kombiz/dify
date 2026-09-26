@@ -1,20 +1,14 @@
 """Abstract interface for file storage implementations."""
+
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 
-from flask import Flask
-
 
 class BaseStorage(ABC):
-    """Interface for file storage.
-    """
-    app = None
-
-    def __init__(self, app: Flask):
-        self.app = app
+    """Interface for file storage."""
 
     @abstractmethod
-    def save(self, filename, data):
+    def save(self, filename: str, data: bytes):
         raise NotImplementedError
 
     @abstractmethod
@@ -26,13 +20,31 @@ class BaseStorage(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def download(self, filename, target_filepath):
+    def download(self, filename: str, target_filepath: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def exists(self, filename):
+    def exists(self, filename: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, filename):
+    def delete(self, filename: str):
         raise NotImplementedError
+
+    def generate_presigned_url(
+        self,
+        filename: str,
+        *,
+        expires_in: int,
+        content_type: str | None = None,
+    ) -> str:
+        """Generate a temporary direct-download URL when the backend supports it."""
+        raise NotImplementedError("This storage backend doesn't support presigned URLs")
+
+    def scan(self, path, files=True, directories=False) -> list[str]:
+        """
+        Scan files and directories in the given path.
+        This method is implemented only in some storage backends.
+        If a storage backend doesn't support scanning, it will raise NotImplementedError.
+        """
+        raise NotImplementedError("This storage backend doesn't support scanning")

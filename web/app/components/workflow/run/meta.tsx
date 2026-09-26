@@ -1,105 +1,112 @@
 'use client'
 import type { FC } from 'react'
 import { useTranslation } from 'react-i18next'
-// import cn from 'classnames'
-import dayjs from 'dayjs'
+import useTimestamp from '@/hooks/use-timestamp'
 
 type Props = {
-  status: string
-  executor?: string
-  startTime?: number
-  time?: number
-  tokens?: number
-  steps?: number
-  showSteps?: boolean
+  readonly status: string
+  readonly executor?: string
+  readonly startTime?: number
+  readonly time?: number
+  readonly tokens?: number
+  readonly steps?: number
+  readonly showSteps?: boolean
 }
 
 const MetaData: FC<Props> = ({
   status,
   executor,
-  startTime = 0,
+  startTime,
   time,
   tokens,
   steps = 1,
   showSteps = true,
 }) => {
   const { t } = useTranslation()
+  const { formatTime } = useTimestamp()
 
   return (
-    <div className='relative'>
-      <div className='h-6 leading-6 text-gray-500 text-xs font-medium'>{t('runLog.meta.title')}</div>
-      <div className='py-1'>
-        <div className='flex'>
-          <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.status')}</div>
-          <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
+    <div className="relative">
+      <div className="h-6 py-1 system-xs-medium-uppercase text-text-tertiary">
+        {t(($) => $['meta.title'], { ns: 'runLog' })}
+      </div>
+      <div className="py-1">
+        <div className="flex">
+          <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+            {t(($) => $['meta.status'], { ns: 'runLog' })}
+          </div>
+          <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
             {status === 'running' && (
-              <div className='my-[5px] w-16 h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
+              <div className="my-1 h-2 w-16 rounded-xs bg-text-quaternary" />
             )}
-            {status === 'succeeded' && (
-              <span>SUCCESS</span>
+            {status === 'succeeded' && <span>SUCCESS</span>}
+            {status === 'partial-succeeded' && <span>PARTIAL SUCCESS</span>}
+            {status === 'exception' && <span>EXCEPTION</span>}
+            {status === 'failed' && <span>FAIL</span>}
+            {status === 'stopped' && <span>STOP</span>}
+            {status === 'paused' && <span>PENDING</span>}
+          </div>
+        </div>
+        <div className="flex">
+          <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+            {t(($) => $['meta.executor'], { ns: 'runLog' })}
+          </div>
+          <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
+            {status === 'running' && (
+              <div className="my-1 h-2 w-22 rounded-xs bg-text-quaternary" />
             )}
-            {status === 'failed' && (
-              <span>FAIL</span>
+            {status !== 'running' && <span>{executor || 'N/A'}</span>}
+          </div>
+        </div>
+        <div className="flex">
+          <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+            {t(($) => $['meta.startTime'], { ns: 'runLog' })}
+          </div>
+          <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
+            {status === 'running' && (
+              <div className="my-1 h-2 w-18 rounded-xs bg-text-quaternary" />
             )}
-            {status === 'stopped' && (
-              <span>STOP</span>
+            {status !== 'running' && (
+              <span>
+                {startTime
+                  ? formatTime(startTime, t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string)
+                  : '-'}
+              </span>
             )}
           </div>
         </div>
-        <div className='flex'>
-          <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.executor')}</div>
-          <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
+        <div className="flex">
+          <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+            {t(($) => $['meta.time'], { ns: 'runLog' })}
+          </div>
+          <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
             {status === 'running' && (
-              <div className='my-[5px] w-[88px] h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
+              <div className="my-1 h-2 w-18 rounded-xs bg-text-quaternary" />
             )}
-            {status !== 'running' && (
-              <span>{executor || 'N/A'}</span>
-            )}
+            {status !== 'running' && <span>{time ? `${time.toFixed(3)}s` : '-'}</span>}
           </div>
         </div>
-        <div className='flex'>
-          <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.startTime')}</div>
-          <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
-            {status === 'running' && (
-              <div className='my-[5px] w-[72px] h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
-            )}
-            {status !== 'running' && (
-              <span>{dayjs(startTime * 1000).format('YYYY-MM-DD hh:mm:ss')}</span>
-            )}
+        <div className="flex">
+          <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+            {t(($) => $['meta.tokens'], { ns: 'runLog' })}
           </div>
-        </div>
-        <div className='flex'>
-          <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.time')}</div>
-          <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
-            {status === 'running' && (
-              <div className='my-[5px] w-[72px] h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
+          <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
+            {['running', 'paused'].includes(status) && (
+              <div className="my-1 h-2 w-12 animate-pulse rounded-xs bg-text-quaternary" />
             )}
-            {status !== 'running' && (
-              <span>{`${time?.toFixed(3)}s`}</span>
-            )}
-          </div>
-        </div>
-        <div className='flex'>
-          <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.tokens')}</div>
-          <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
-            {status === 'running' && (
-              <div className='my-[5px] w-[48px] h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
-            )}
-            {status !== 'running' && (
-              <span>{`${tokens || 0} Tokens`}</span>
-            )}
+            {!['running', 'paused'].includes(status) && <span>{`${tokens || 0} Tokens`}</span>}
           </div>
         </div>
         {showSteps && (
-          <div className='flex'>
-            <div className='shrink-0 w-[104px] px-2 py-[5px] text-gray-500 text-xs leading-[18px] truncate'>{t('runLog.meta.steps')}</div>
-            <div className='grow px-2 py-[5px] text-gray-900 text-xs leading-[18px]'>
+          <div className="flex">
+            <div className="w-26 shrink-0 truncate px-2 py-1.5 system-xs-regular text-text-tertiary">
+              {t(($) => $['meta.steps'], { ns: 'runLog' })}
+            </div>
+            <div className="grow px-2 py-1.5 system-xs-regular text-text-secondary">
               {status === 'running' && (
-                <div className='my-[5px] w-[24px] h-2 rounded-sm bg-[rgba(0,0,0,0.05)]'/>
+                <div className="my-1 h-2 w-6 rounded-xs bg-text-quaternary" />
               )}
-              {status !== 'running' && (
-                <span>{steps}</span>
-              )}
+              {status !== 'running' && <span>{steps}</span>}
             </div>
           </div>
         )}

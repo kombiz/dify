@@ -1,29 +1,36 @@
+import type { WorkflowRunDetailResponse } from '@/models/log'
 import { memo, useCallback } from 'react'
-import type { WorkflowDataUpdator } from '../types'
+import { useHooksStore } from '../hooks-store'
+import { useWorkflowUpdate } from '../hooks/use-workflow-update'
 import Run from '../run'
 import { useStore } from '../store'
-import { useWorkflowInteractions } from '../hooks'
+import { formatWorkflowRunIdentifier } from '../utils'
 
 const Record = () => {
-  const historyWorkflowData = useStore(s => s.historyWorkflowData)
-  const { handleUpdateWorkflowCanvas } = useWorkflowInteractions()
+  const historyWorkflowData = useStore((s) => s.historyWorkflowData)
+  const { handleUpdateWorkflowCanvas } = useWorkflowUpdate()
+  const getWorkflowRunAndTraceUrl = useHooksStore((s) => s.getWorkflowRunAndTraceUrl)
 
-  const handleResultCallback = useCallback((res: any) => {
-    const graph: WorkflowDataUpdator = res.graph
-    handleUpdateWorkflowCanvas({
-      nodes: graph.nodes,
-      edges: graph.edges,
-      viewport: graph.viewport,
-    })
-  }, [handleUpdateWorkflowCanvas])
+  const handleResultCallback = useCallback(
+    (res: WorkflowRunDetailResponse) => {
+      const graph = res.graph
+      handleUpdateWorkflowCanvas({
+        nodes: graph.nodes,
+        edges: graph.edges,
+        viewport: graph.viewport || { x: 0, y: 0, zoom: 1 },
+      })
+    },
+    [handleUpdateWorkflowCanvas],
+  )
 
   return (
-    <div className='flex flex-col w-[400px] h-full rounded-l-2xl border-[0.5px] border-gray-200 shadow-xl bg-white'>
-      <div className='flex items-center justify-between p-4 pb-1 text-base font-semibold text-gray-900'>
-        {`Test Run#${historyWorkflowData?.sequence_number}`}
+    <div className="flex h-full w-100 flex-col rounded-l-2xl border-[0.5px] border-components-panel-border bg-components-panel-bg shadow-xl">
+      <div className="flex items-center justify-between p-4 pb-0 system-xl-semibold text-text-primary">
+        {`Test Run${formatWorkflowRunIdentifier(historyWorkflowData?.finished_at)}`}
       </div>
       <Run
-        runID={historyWorkflowData?.id || ''}
+        runDetailUrl={getWorkflowRunAndTraceUrl(historyWorkflowData?.id).runUrl}
+        tracingListUrl={getWorkflowRunAndTraceUrl(historyWorkflowData?.id).traceUrl}
         getResultCallback={handleResultCallback}
       />
     </div>

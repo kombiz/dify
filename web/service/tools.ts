@@ -1,6 +1,15 @@
+import type {
+  Collection,
+  Credential,
+  CustomCollectionBackend,
+  CustomParamSchema,
+  Tool,
+  ToolCredential,
+  WorkflowToolProviderRequest,
+  WorkflowToolProviderResponse,
+} from '@/app/components/tools/types'
+import { buildProviderQuery } from './_tools_util'
 import { get, post } from './base'
-import type { Collection, CustomCollectionBackend, CustomParamSchema, Tool, ToolCredential } from '@/app/components/tools/types'
-import type { ToolWithProvider } from '@/app/components/workflow/types'
 
 export const fetchCollectionList = () => {
   return get<Collection[]>('/workspaces/current/tool-providers')
@@ -11,21 +20,34 @@ export const fetchBuiltInToolList = (collectionName: string) => {
 }
 
 export const fetchCustomToolList = (collectionName: string) => {
-  return get<Tool[]>(`/workspaces/current/tool-provider/api/tools?provider=${collectionName}`)
+  const query = buildProviderQuery(collectionName)
+  return get<Tool[]>(`/workspaces/current/tool-provider/api/tools?${query}`)
 }
 
 export const fetchModelToolList = (collectionName: string) => {
-  return get<Tool[]>(`/workspaces/current/tool-provider/model/tools?provider=${collectionName}`)
+  const query = buildProviderQuery(collectionName)
+  return get<Tool[]>(`/workspaces/current/tool-provider/model/tools?${query}`)
+}
+
+export const fetchWorkflowToolList = (appID: string) => {
+  return get<Tool[]>(`/workspaces/current/tool-provider/workflow/tools?workflow_tool_id=${appID}`)
 }
 
 export const fetchBuiltInToolCredentialSchema = (collectionName: string) => {
-  return get<ToolCredential[]>(`/workspaces/current/tool-provider/builtin/${collectionName}/credentials_schema`)
+  return get<ToolCredential[]>(
+    `/workspaces/current/tool-provider/builtin/${collectionName}/credentials_schema`,
+  )
 }
 
 export const fetchBuiltInToolCredential = (collectionName: string) => {
-  return get<ToolCredential[]>(`/workspaces/current/tool-provider/builtin/${collectionName}/credentials`)
+  return get<Record<string, unknown>>(
+    `/workspaces/current/tool-provider/builtin/${collectionName}/credentials`,
+  )
 }
-export const updateBuiltInToolCredential = (collectionName: string, credential: Record<string, any>) => {
+export const updateBuiltInToolCredential = (
+  collectionName: string,
+  credential: Record<string, unknown>,
+) => {
   return post(`/workspaces/current/tool-provider/builtin/${collectionName}/update`, {
     body: {
       credentials: credential,
@@ -40,15 +62,19 @@ export const removeBuiltInToolCredential = (collectionName: string) => {
 }
 
 export const parseParamsSchema = (schema: string) => {
-  return post<{ parameters_schema: CustomParamSchema[]; schema_type: string }>('/workspaces/current/tool-provider/api/schema', {
-    body: {
-      schema,
+  return post<{ parameters_schema: CustomParamSchema[]; schema_type: string }>(
+    '/workspaces/current/tool-provider/api/schema',
+    {
+      body: {
+        schema,
+      },
     },
-  })
+  )
 }
 
 export const fetchCustomCollection = (collectionName: string) => {
-  return get<CustomCollectionBackend>(`/workspaces/current/tool-provider/api/get?provider=${collectionName}`)
+  const query = buildProviderQuery(collectionName)
+  return get<CustomCollectionBackend>(`/workspaces/current/tool-provider/api/get?${query}`)
 }
 
 export const createCustomCollection = (collection: CustomCollectionBackend) => {
@@ -76,14 +102,21 @@ export const removeCustomCollection = (collectionName: string) => {
 }
 
 export const importSchemaFromURL = (url: string) => {
-  return get('/workspaces/current/tool-provider/api/remote', {
+  return get<{ schema: string }>('/workspaces/current/tool-provider/api/remote', {
     params: {
       url,
     },
   })
 }
 
-export const testAPIAvailable = (payload: any) => {
+export const testAPIAvailable = (payload: {
+  provider_name: string
+  tool_name: string
+  credentials: Credential
+  schema_type: string
+  schema: string
+  parameters: Record<string, string>
+}) => {
   return post('/workspaces/current/tool-provider/api/test/pre', {
     body: {
       ...payload,
@@ -91,10 +124,36 @@ export const testAPIAvailable = (payload: any) => {
   })
 }
 
-export const fetchAllBuiltInTools = () => {
-  return get<ToolWithProvider[]>('/workspaces/current/tools/builtin')
+export const createWorkflowToolProvider = (
+  payload: WorkflowToolProviderRequest & { workflow_app_id: string },
+) => {
+  return post('/workspaces/current/tool-provider/workflow/create', {
+    body: { ...payload },
+  })
 }
 
-export const fetchAllCustomTools = () => {
-  return get<ToolWithProvider[]>('/workspaces/current/tools/api')
+export const saveWorkflowToolProvider = (
+  payload: WorkflowToolProviderRequest &
+    Partial<{
+      workflow_app_id: string
+      workflow_tool_id: string
+    }>,
+) => {
+  return post('/workspaces/current/tool-provider/workflow/update', {
+    body: { ...payload },
+  })
+}
+
+export const fetchWorkflowToolDetail = (toolID: string) => {
+  return get<WorkflowToolProviderResponse>(
+    `/workspaces/current/tool-provider/workflow/get?workflow_tool_id=${toolID}`,
+  )
+}
+
+export const deleteWorkflowTool = (toolID: string) => {
+  return post('/workspaces/current/tool-provider/workflow/delete', {
+    body: {
+      workflow_tool_id: toolID,
+    },
+  })
 }

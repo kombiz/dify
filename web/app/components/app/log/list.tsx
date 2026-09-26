@@ -1,45 +1,90 @@
 'use client'
 import type { FC } from 'react'
-import React, { useEffect, useRef, useState } from 'react'
-import useSWR from 'swr'
-import {
-  HandThumbDownIcon,
-  HandThumbUpIcon,
-  InformationCircleIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/outline'
-import { get } from 'lodash-es'
-import InfiniteScroll from 'react-infinite-scroll-component'
-import dayjs from 'dayjs'
-import { createContext, useContext } from 'use-context-selector'
-import { useShallow } from 'zustand/react/shallow'
-import { useTranslation } from 'react-i18next'
-import cn from 'classnames'
-import s from './style.module.css'
-import VarPanel from './var-panel'
-import { randomString } from '@/utils'
-import { EditIconSolid } from '@/app/components/app/chat/icon-component'
-import type { FeedbackFunc, Feedbacktype, IChatItem, SubmitAnnotationFunc } from '@/app/components/app/chat/type'
-import type { ChatConversationFullDetailResponse, ChatConversationGeneralDetail, ChatConversationsResponse, ChatMessage, ChatMessagesRequest, CompletionConversationFullDetailResponse, CompletionConversationGeneralDetail, CompletionConversationsResponse, LogAnnotation } from '@/models/log'
+import type { ChatItemInTree } from '../../base/chat/types'
+import type {
+  FeedbackFunc,
+  FeedbackType,
+  IChatItem,
+  SubmitAnnotationFunc,
+} from '@/app/components/base/chat/chat/type'
+import type {
+  ChatConversationGeneralDetail,
+  ChatConversationsResponse,
+  ChatMessagesRequest,
+  CompletionConversationGeneralDetail,
+  CompletionConversationsResponse,
+  LogAnnotation,
+} from '@/models/log'
 import type { App } from '@/types/app'
-import Loading from '@/app/components/base/loading'
-import Drawer from '@/app/components/base/drawer'
-import Popover from '@/app/components/base/popover'
-import Chat from '@/app/components/app/chat'
-import Tooltip from '@/app/components/base/tooltip'
-import { ToastContext } from '@/app/components/base/toast'
-import { fetchChatConversationDetail, fetchChatMessages, fetchCompletionConversationDetail, updateLogMessageAnnotations, updateLogMessageFeedbacks } from '@/service/log'
-import { TONE_LIST } from '@/config'
-import ModelIcon from '@/app/components/header/account-setting/model-provider-page/model-icon'
-import { useTextGenerationCurrentProviderAndModelAndModelList } from '@/app/components/header/account-setting/model-provider-page/hooks'
-import ModelName from '@/app/components/header/account-setting/model-provider-page/model-name'
-import useBreakpoints, { MediaType } from '@/hooks/use-breakpoints'
-import TextGeneration from '@/app/components/app/text-generate/item'
-import { addFileInfos, sortAgentSorts } from '@/app/components/tools/utils'
-import AgentLogModal from '@/app/components/base/agent-log-modal'
-import PromptLogModal from '@/app/components/base/prompt-log-modal'
-import MessageLogModal from '@/app/components/base/message-log-modal'
+import { HandThumbDownIcon, HandThumbUpIcon } from '@heroicons/react/24/outline'
+import { cn } from '@langgenius/dify-ui/cn'
+import {
+  Drawer,
+  DrawerBackdrop,
+  DrawerContent,
+  DrawerPopup,
+  DrawerPortal,
+  DrawerTrigger,
+  DrawerViewport,
+} from '@langgenius/dify-ui/drawer'
+import { IconButton } from '@langgenius/dify-ui/icon-button'
+import { StatusDot } from '@langgenius/dify-ui/status-dot'
+import { toast } from '@langgenius/dify-ui/toast'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@langgenius/dify-ui/tooltip'
+import { RiCloseLine, RiEditFill } from '@remixicon/react'
+import { useQuery } from '@tanstack/react-query'
+import dayjs from 'dayjs'
+import timezone from 'dayjs/plugin/timezone'
+import utc from 'dayjs/plugin/utc'
+import { noop } from 'es-toolkit/function'
+import { parseAsString, useQueryState } from 'nuqs'
+import * as React from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useShallow } from 'zustand/react/shallow'
+import ModelInfo from '@/app/components/app/log/model-info'
 import { useStore as useAppStore } from '@/app/components/app/store'
+import TextGeneration from '@/app/components/app/text-generate/item'
+import AgentLogModal from '@/app/components/base/agent-log-modal'
+import Chat from '@/app/components/base/chat/chat'
+import CopyIcon from '@/app/components/base/copy-icon'
+import Loading from '@/app/components/base/loading'
+import MessageLogModal from '@/app/components/base/message-log-modal'
+import { WorkflowContextProvider } from '@/app/components/workflow/context'
+import { userProfileQueryOptions } from '@/features/account-profile/client'
+import useBreakpoints, { MediaType } from '@/hooks/use-breakpoints'
+import useTimestamp from '@/hooks/use-timestamp'
+import {
+  fetchChatMessages,
+  updateLogMessageAnnotations,
+  updateLogMessageFeedbacks,
+} from '@/service/log'
+import { AppSourceType } from '@/service/share'
+import { useChatConversationDetail, useCompletionConversationDetail } from '@/service/use-log'
+import { AppModeEnum } from '@/types/app'
+import PromptLogModal from '../../base/prompt-log-modal'
+import {
+  applyAnnotationAdded,
+  applyAnnotationEdited,
+  applyAnnotationRemoved,
+  buildChatThreadState,
+  getCompletionMessageFiles,
+  getConversationRowValues,
+  getDetailVarList,
+  getFormattedChatList,
+  getThreadChatItems,
+  isNearTopLoadMore,
+  mergePaginatedChatItems,
+  mergeUniqueChatItems,
+} from './list-utils'
+import VarPanel from './var-panel'
+
+type AppStoreState = ReturnType<typeof useAppStore.getState>
+type ConversationListItem = ChatConversationGeneralDetail | CompletionConversationGeneralDetail
+type ConversationSelection = ConversationListItem | { id: string; isPlaceholder?: true }
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
 
 type IConversationList = {
   logs?: ChatConversationsResponse | CompletionConversationsResponse
@@ -49,365 +94,542 @@ type IConversationList = {
 
 const defaultValue = 'N/A'
 
-type IDrawerContext = {
-  onClose: () => void
-  appDetail?: App
+type StatusCount = {
+  paused: number
+  success: number
+  failed: number
+  partial_success: number
 }
-
-const DrawerContext = createContext<IDrawerContext>({} as IDrawerContext)
 
 /**
  * Icon component with numbers
  */
-const HandThumbIconWithCount: FC<{ count: number; iconType: 'up' | 'down' }> = ({ count, iconType }) => {
+const HandThumbIconWithCount: FC<{ count: number; iconType: 'up' | 'down' }> = ({
+  count,
+  iconType,
+}) => {
   const classname = iconType === 'up' ? 'text-primary-600 bg-primary-50' : 'text-red-600 bg-red-50'
   const Icon = iconType === 'up' ? HandThumbUpIcon : HandThumbDownIcon
-  return <div className={`inline-flex items-center w-fit rounded-md p-1 text-xs ${classname} mr-1 last:mr-0`}>
-    <Icon className={'h-3 w-3 mr-0.5 rounded-md'} />
-    {count > 0 ? count : null}
-  </div>
+  return (
+    <div
+      className={`inline-flex w-fit items-center rounded-md p-1 text-xs ${classname} mr-1 last:mr-0`}
+    >
+      <Icon className="mr-0.5 size-3 rounded-md" />
+      {count > 0 ? count : null}
+    </div>
+  )
 }
 
-const PARAM_MAP = {
-  temperature: 'Temperature',
-  top_p: 'Top P',
-  presence_penalty: 'Presence Penalty',
-  max_tokens: 'Max Token',
-  stop: 'Stop',
-  frequency_penalty: 'Frequency Penalty',
+const statusTdRender = (statusCount: StatusCount) => {
+  if (!statusCount) return null
+
+  if (statusCount.paused > 0) {
+    return (
+      <div className="inline-flex items-center gap-1 system-xs-semibold-uppercase">
+        <StatusDot status="warning" />
+        <span className="text-util-colors-warning-warning-600">Pending</span>
+      </div>
+    )
+  } else if (statusCount.partial_success + statusCount.failed === 0) {
+    return (
+      <div className="inline-flex items-center gap-1 system-xs-semibold-uppercase">
+        <StatusDot status="success" />
+        <span className="text-util-colors-green-green-600">Success</span>
+      </div>
+    )
+  } else if (statusCount.failed === 0) {
+    return (
+      <div className="inline-flex items-center gap-1 system-xs-semibold-uppercase">
+        <StatusDot status="success" />
+        <span className="text-util-colors-green-green-600">Partial Success</span>
+      </div>
+    )
+  } else {
+    return (
+      <div className="inline-flex items-center gap-1 system-xs-semibold-uppercase">
+        <StatusDot status="error" />
+        <span className="text-util-colors-red-red-600">
+          {statusCount.failed} {`${statusCount.failed > 1 ? 'Failures' : 'Failure'}`}
+        </span>
+      </div>
+    )
+  }
 }
 
-// Format interface data for easy display
-const getFormattedChatList = (messages: ChatMessage[], conversationId: string) => {
-  const newChatList: IChatItem[] = []
-  messages.forEach((item: ChatMessage) => {
-    newChatList.push({
-      id: `question-${item.id}`,
-      content: item.inputs.query || item.inputs.default_input || item.query, // text generation: item.inputs.query; chat: item.query
-      isAnswer: false,
-      message_files: item.message_files?.filter((file: any) => file.belongs_to === 'user') || [],
-    })
-    newChatList.push({
-      id: item.id,
-      content: item.answer,
-      agent_thoughts: addFileInfos(item.agent_thoughts ? sortAgentSorts(item.agent_thoughts) : item.agent_thoughts, item.message_files),
-      feedback: item.feedbacks.find(item => item.from_source === 'user'), // user feedback
-      adminFeedback: item.feedbacks.find(item => item.from_source === 'admin'), // admin feedback
-      feedbackDisabled: false,
-      isAnswer: true,
-      message_files: item.message_files?.filter((file: any) => file.belongs_to === 'assistant') || [],
-      log: [
-        ...item.message,
-        ...(item.message[item.message.length - 1]?.role !== 'assistant'
-          ? [
-            {
-              role: 'assistant',
-              text: item.answer,
-              files: item.message_files?.filter((file: any) => file.belongs_to === 'assistant') || [],
-            },
-          ]
-          : []),
-      ],
-      workflow_run_id: item.workflow_run_id,
-      conversationId,
-      input: {
-        inputs: item.inputs,
-        query: item.query,
-      },
-      more: {
-        time: dayjs.unix(item.created_at).format('hh:mm A'),
-        tokens: item.answer_tokens + item.message_tokens,
-        latency: item.provider_response_latency.toFixed(2),
-      },
-      annotation: (() => {
-        if (item.annotation_hit_history) {
-          return {
-            id: item.annotation_hit_history.annotation_id,
-            authorName: item.annotation_hit_history.annotation_create_account?.name || 'N/A',
-            created_at: item.annotation_hit_history.created_at,
-          }
-        }
-
-        if (item.annotation) {
-          return {
-            id: '',
-            authorName: '',
-            logAnnotation: item.annotation,
-            created_at: 0,
-          }
-        }
-
-        return undefined
-      })(),
-    })
-  })
-  return newChatList
-}
-
-// const displayedParams = CompletionParams.slice(0, -2)
-const validatedParams = ['temperature', 'top_p', 'presence_penalty', 'frequency_penalty']
-
-type IDetailPanel<T> = {
+type IDetailPanel = {
+  appDetail: App
   detail: any
+  onClose: () => void
   onFeedback: FeedbackFunc
   onSubmitAnnotation: SubmitAnnotationFunc
 }
 
-function DetailPanel<T extends ChatConversationFullDetailResponse | CompletionConversationFullDetailResponse>({ detail, onFeedback }: IDetailPanel<T>) {
-  const { onClose, appDetail } = useContext(DrawerContext)
-  const { currentLogItem, setCurrentLogItem, showPromptLogModal, setShowPromptLogModal, showAgentLogModal, setShowAgentLogModal, showMessageLogModal, setShowMessageLogModal } = useAppStore(useShallow(state => ({
-    currentLogItem: state.currentLogItem,
-    setCurrentLogItem: state.setCurrentLogItem,
-    showPromptLogModal: state.showPromptLogModal,
-    setShowPromptLogModal: state.setShowPromptLogModal,
-    showAgentLogModal: state.showAgentLogModal,
-    setShowAgentLogModal: state.setShowAgentLogModal,
-    showMessageLogModal: state.showMessageLogModal,
-    setShowMessageLogModal: state.setShowMessageLogModal,
-  })))
+function DetailPanel({ appDetail, detail, onClose, onFeedback }: IDetailPanel) {
+  const MIN_ITEMS_FOR_SCROLL_LOADING = 8
+  const SCROLL_DEBOUNCE_MS = 200
+  const { data: timezone } = useQuery({
+    ...userProfileQueryOptions(),
+    select: (data) => data.profile.timezone ?? undefined,
+  })
+  const { formatTime } = useTimestamp()
+  const {
+    currentLogItem,
+    setCurrentLogItem,
+    showMessageLogModal,
+    setShowMessageLogModal,
+    showPromptLogModal,
+    setShowPromptLogModal,
+    showAgentLogModal,
+    setShowAgentLogModal,
+    currentLogModalActiveTab,
+  } = useAppStore(
+    useShallow((state: AppStoreState) => ({
+      currentLogItem: state.currentLogItem,
+      setCurrentLogItem: state.setCurrentLogItem,
+      showMessageLogModal: state.showMessageLogModal,
+      setShowMessageLogModal: state.setShowMessageLogModal,
+      showPromptLogModal: state.showPromptLogModal,
+      setShowPromptLogModal: state.setShowPromptLogModal,
+      showAgentLogModal: state.showAgentLogModal,
+      setShowAgentLogModal: state.setShowAgentLogModal,
+      currentLogModalActiveTab: state.currentLogModalActiveTab,
+    })),
+  )
   const { t } = useTranslation()
-  const [items, setItems] = React.useState<IChatItem[]>([])
   const [hasMore, setHasMore] = useState(true)
   const [varValues, setVarValues] = useState<Record<string, string>>({})
-  const fetchData = async () => {
+  const isLoadingRef = useRef(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const requestIdRef = useRef(0)
+  const lastLoadTimeRef = useRef(0)
+  const retryCountRef = useRef(0)
+  const oldestAnswerIdRef = useRef<string | undefined>(undefined)
+  const MAX_RETRY_COUNT = 3
+
+  const [allChatItems, setAllChatItems] = useState<IChatItem[]>([])
+  const [chatItemTree, setChatItemTree] = useState<ChatItemInTree[]>([])
+  const [threadChatItems, setThreadChatItems] = useState<IChatItem[]>([])
+
+  const fetchData = useCallback(async () => {
+    if (isLoadingRef.current || !hasMore) return
+
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    const currentRequestId = ++requestIdRef.current
+
     try {
-      if (!hasMore)
-        return
+      isLoadingRef.current = true
+
       const params: ChatMessagesRequest = {
         conversation_id: detail.id,
-        limit: 4,
+        limit: 10,
       }
-      if (items?.[0]?.id)
-        params.first_id = items?.[0]?.id.replace('question-', '')
+      // Use ref for pagination anchor to avoid stale closure issues
+      if (oldestAnswerIdRef.current) params.first_id = oldestAnswerIdRef.current
 
       const messageRes = await fetchChatMessages({
-        url: `/apps/${appDetail?.id}/chat-messages`,
+        url: `/apps/${appDetail.id}/chat-messages`,
         params,
       })
+
+      // Ignore stale responses
+      if (currentRequestId !== requestIdRef.current || controller.signal.aborted) return
       if (messageRes.data.length > 0) {
-        const varValues = messageRes.data[0].inputs
+        const varValues = messageRes.data.at(-1)!.inputs
         setVarValues(varValues)
       }
-      const newItems = [...getFormattedChatList(messageRes.data, detail.id), ...items]
-      if (messageRes.has_more === false && detail?.model_config?.configs?.introduction) {
-        newItems.unshift({
-          id: 'introduction',
-          isAnswer: true,
-          isOpeningStatement: true,
-          content: detail?.model_config?.configs?.introduction ?? 'hello',
-          feedbackDisabled: true,
-        })
-      }
-      setItems(newItems)
       setHasMore(messageRes.has_more)
-    }
-    catch (err) {
-      console.error(err)
-    }
-  }
 
+      const newItems = getFormattedChatList(
+        messageRes.data,
+        detail.id,
+        timezone!,
+        t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+      )
+
+      // Use functional update to avoid stale state issues
+      setAllChatItems((prevItems: IChatItem[]) => mergeUniqueChatItems(prevItems, newItems))
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return
+      console.error('fetchData execution failed:', err)
+    } finally {
+      isLoadingRef.current = false
+      if (abortControllerRef.current === controller) abortControllerRef.current = null
+    }
+  }, [detail.id, hasMore, timezone, t, appDetail])
+
+  // Derive chatItemTree, threadChatItems, and oldestAnswerIdRef from allChatItems
   useEffect(() => {
-    if (appDetail?.id && detail.id && appDetail?.mode !== 'completion')
-      fetchData()
-  }, [appDetail?.id, detail.id, appDetail?.mode])
+    if (allChatItems.length === 0) return
 
-  const isChatMode = appDetail?.mode !== 'completion'
-  const isAdvanced = appDetail?.mode === 'advanced-chat'
-
-  const targetTone = TONE_LIST.find((item: any) => {
-    let res = true
-    validatedParams.forEach((param) => {
-      res = item.config?.[param] === detail.model_config?.configs?.completion_params?.[param]
+    const nextThreadState = buildChatThreadState({
+      allChatItems,
+      hasMore,
+      introduction: detail?.model_config?.configs?.introduction,
     })
-    return res
-  })?.name ?? 'custom'
+    setChatItemTree(nextThreadState.chatItemTree)
+    setThreadChatItems(nextThreadState.threadChatItems)
+    if (nextThreadState.oldestAnswerId) oldestAnswerIdRef.current = nextThreadState.oldestAnswerId
+  }, [allChatItems, hasMore, detail?.model_config?.configs?.introduction])
 
-  const modelName = (detail.model_config as any).model?.name
-  const provideName = (detail.model_config as any).model?.provider as any
-  const {
-    currentModel,
-    currentProvider,
-  } = useTextGenerationCurrentProviderAndModelAndModelList(
-    { provider: provideName, model: modelName },
+  const switchSibling = useCallback(
+    (siblingMessageId: string) => {
+      setThreadChatItems(getThreadChatItems(chatItemTree, siblingMessageId))
+    },
+    [chatItemTree],
   )
-  const varList = (detail.model_config as any).user_input_form?.map((item: any) => {
-    const itemContent = item[Object.keys(item)[0]]
-    return {
-      label: itemContent.variable,
-      value: varValues[itemContent.variable] || detail.message?.inputs?.[itemContent.variable],
-    }
-  }) || []
-  const message_files = (!isChatMode && detail.message.message_files && detail.message.message_files.length > 0)
-    ? detail.message.message_files.map((item: any) => item.url)
-    : []
 
-  const getParamValue = (param: string) => {
-    const value = detail?.model_config.model?.completion_params?.[param] || '-'
-    if (param === 'stop') {
-      if (Array.isArray(value))
-        return value.join(',')
-      else
-        return '-'
-    }
+  const handleAnnotationEdited = useCallback(
+    (query: string, answer: string, index: number) => {
+      setAllChatItems(applyAnnotationEdited(allChatItems, query, answer, index))
+    },
+    [allChatItems],
+  )
+  const handleAnnotationAdded = useCallback(
+    (annotationId: string, authorName: string, query: string, answer: string, index: number) => {
+      setAllChatItems(
+        applyAnnotationAdded(allChatItems, annotationId, authorName, query, answer, index),
+      )
+    },
+    [allChatItems],
+  )
+  const handleAnnotationRemoved = useCallback(
+    async (index: number): Promise<boolean> => {
+      const annotation = allChatItems[index]?.annotation
 
-    return value
-  }
+      try {
+        if (annotation?.id) {
+          const { delAnnotation } = await import('@/service/annotation')
+          await delAnnotation(appDetail.id, annotation.id)
+        }
+
+        setAllChatItems(applyAnnotationRemoved(allChatItems, index))
+
+        toast.success(t(($) => $['actionMsg.modifiedSuccessfully'], { ns: 'common' }))
+        return true
+      } catch {
+        toast.error(t(($) => $['actionMsg.modifiedUnsuccessfully'], { ns: 'common' }))
+        return false
+      }
+    },
+    [allChatItems, appDetail.id, t],
+  )
+
+  const fetchInitiated = useRef(false)
+
+  // Only load initial messages, don't auto-load more
+  useEffect(() => {
+    if (
+      appDetail.id &&
+      detail.id &&
+      appDetail.mode !== AppModeEnum.COMPLETION &&
+      !fetchInitiated.current
+    ) {
+      // Mark as initialized, but don't auto-load more messages
+      fetchInitiated.current = true
+      // Still call fetchData to get initial messages
+      fetchData()
+    }
+  }, [appDetail.id, detail.id, appDetail.mode, fetchData])
+
+  const [isLoading, setIsLoading] = useState(false)
+
+  const loadMoreMessages = useCallback(async () => {
+    if (isLoading || !hasMore || !appDetail.id || !detail.id) return
+
+    // Throttle using ref to persist across re-renders
+    const now = Date.now()
+    if (now - lastLoadTimeRef.current < SCROLL_DEBOUNCE_MS) return
+    lastLoadTimeRef.current = now
+
+    setIsLoading(true)
+
+    try {
+      const params: ChatMessagesRequest = {
+        conversation_id: detail.id,
+        limit: 10,
+      }
+
+      // Use ref for pagination anchor to avoid stale closure issues
+      if (oldestAnswerIdRef.current) {
+        params.first_id = oldestAnswerIdRef.current
+      }
+
+      const messageRes = await fetchChatMessages({
+        url: `/apps/${appDetail.id}/chat-messages`,
+        params,
+      })
+
+      if (!messageRes.data || messageRes.data.length === 0) {
+        setHasMore(false)
+        retryCountRef.current = 0
+        return
+      }
+
+      if (messageRes.data.length > 0) {
+        const varValues = messageRes.data.at(-1)!.inputs
+        setVarValues(varValues)
+      }
+
+      setHasMore(messageRes.has_more)
+
+      const newItems = getFormattedChatList(
+        messageRes.data,
+        detail.id,
+        timezone!,
+        t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+      )
+
+      // Use functional update to get latest state and avoid stale closures
+      setAllChatItems((prevItems: IChatItem[]) => {
+        const nextItems = mergePaginatedChatItems({
+          maxRetryCount: MAX_RETRY_COUNT,
+          newItems,
+          prevItems,
+          retryCount: retryCountRef.current,
+        })
+        retryCountRef.current = nextItems.retryCount
+        return nextItems.items
+      })
+    } catch (error) {
+      console.error(error)
+      setHasMore(false)
+      retryCountRef.current = 0
+    } finally {
+      setIsLoading(false)
+    }
+  }, [detail.id, hasMore, isLoading, timezone, t, appDetail])
+
+  const handleScroll = useCallback(() => {
+    const scrollableDiv = document.getElementById('scrollableDiv')
+    if (!scrollableDiv) return
+    const clientHeight = scrollableDiv.clientHeight
+    const scrollHeight = scrollableDiv.scrollHeight
+    const currentScrollTop = scrollableDiv.scrollTop
+    // currentScrollTop is negative due to column-reverse flex direction
+    const isNearTop = isNearTopLoadMore({
+      clientHeight,
+      scrollHeight,
+      scrollTop: currentScrollTop,
+    })
+
+    if (isNearTop && hasMore && !isLoading) {
+      loadMoreMessages()
+    }
+  }, [hasMore, isLoading, loadMoreMessages])
+
+  const isChatMode = appDetail.mode !== AppModeEnum.COMPLETION
+  const isAdvanced = appDetail.mode === AppModeEnum.ADVANCED_CHAT
+  const shouldShowPromptLogModal = showPromptLogModal && !!currentLogItem?.log
+
+  const varList = getDetailVarList(detail, varValues)
+  const message_files = getCompletionMessageFiles(detail, isChatMode)
 
   const [width, setWidth] = useState(0)
   const ref = useRef<HTMLDivElement>(null)
 
   const adjustModalWidth = () => {
-    if (ref.current)
-      setWidth(document.body.clientWidth - (ref.current?.clientWidth + 16) - 8)
+    if (ref.current) setWidth(document.body.clientWidth - (ref.current?.clientWidth + 16) - 8)
   }
 
   useEffect(() => {
-    adjustModalWidth()
+    const raf = requestAnimationFrame(adjustModalWidth)
+    return () => cancelAnimationFrame(raf)
   }, [])
 
   return (
-    <div ref={ref} className='rounded-xl border-[0.5px] border-gray-200 h-full flex flex-col overflow-auto'>
+    <div
+      ref={ref}
+      className="flex h-full flex-col rounded-xl border-[0.5px] border-components-panel-border"
+    >
       {/* Panel Header */}
-      <div className='border-b border-gray-100 py-4 px-6 flex items-center justify-between'>
-        <div>
-          <div className='text-gray-500 text-[10px] leading-[14px]'>{isChatMode ? t('appLog.detail.conversationId') : t('appLog.detail.time')}</div>
-          <div className='text-gray-700 text-[13px] leading-[18px]'>{isChatMode ? detail.id?.split('-').slice(-1)[0] : dayjs.unix(detail.created_at).format(t('appLog.dateTimeFormat') as string)}</div>
-        </div>
-        <div className='flex items-center flex-wrap gap-y-1 justify-end'>
-          {!isAdvanced && (
-            <>
-              <div
-                className={cn('mr-2 flex items-center border h-8 px-2 space-x-2 rounded-lg bg-indigo-25 border-[#2A87F5]')}
-              >
-                <ModelIcon
-                  className='!w-5 !h-5'
-                  provider={currentProvider}
-                  modelName={currentModel?.model}
-                />
-                <ModelName
-                  modelItem={currentModel!}
-                  showMode
-                />
-              </div>
-              <Popover
-                position='br'
-                className='!w-[280px]'
-                btnClassName='mr-4 !bg-gray-50 !py-1.5 !px-2.5 border-none font-normal'
-                btnElement={<>
-                  <span className='text-[13px]'>{targetTone}</span>
-                  <InformationCircleIcon className='h-4 w-4 text-gray-800 ml-1.5' />
-                </>}
-                htmlContent={<div className='w-[280px]'>
-                  <div className='flex justify-between py-2 px-4 font-medium text-sm text-gray-700'>
-                    <span>Tone of responses</span>
-                    <div>{targetTone}</div>
-                  </div>
-                  {['temperature', 'top_p', 'presence_penalty', 'max_tokens', 'stop'].map((param: string, index: number) => {
-                    return <div className='flex justify-between py-2 px-4 bg-gray-50' key={index}>
-                      <span className='text-xs text-gray-700'>{PARAM_MAP[param as keyof typeof PARAM_MAP]}</span>
-                      <span className='text-gray-800 font-medium text-xs'>{getParamValue(param)}</span>
-                    </div>
-                  })}
-                </div>}
-              />
-            </>
-          )}
-          <div className='w-6 h-6 rounded-lg flex items-center justify-center hover:cursor-pointer hover:bg-gray-100'>
-            <XMarkIcon className='w-4 h-4 text-gray-500' onClick={onClose} />
+      <div className="flex shrink-0 items-center gap-2 rounded-t-xl bg-components-panel-bg pt-3 pr-3 pb-2 pl-4">
+        <div className="shrink-0">
+          <div className="mb-0.5 system-xs-semibold-uppercase text-text-primary">
+            {isChatMode
+              ? t(($) => $['detail.conversationId'], { ns: 'appLog' })
+              : t(($) => $['detail.time'], { ns: 'appLog' })}
           </div>
+          {isChatMode && (
+            <div className="flex items-center system-2xs-regular-uppercase text-text-secondary">
+              <Tooltip>
+                <TooltipTrigger render={<div className="truncate">{detail.id}</div>} />
+                <TooltipContent>{detail.id}</TooltipContent>
+              </Tooltip>
+              <CopyIcon content={detail.id} />
+            </div>
+          )}
+          {!isChatMode && (
+            <div className="system-2xs-regular-uppercase text-text-secondary">
+              {formatTime(
+                detail.created_at,
+                t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+              )}
+            </div>
+          )}
         </div>
-
+        <div className="flex grow flex-wrap items-center justify-end gap-y-1">
+          {!isAdvanced && <ModelInfo model={detail.model_config.model} />}
+        </div>
+        <IconButton
+          size="lg"
+          aria-label={t(($) => $['operation.close'], { ns: 'common' })}
+          onClick={onClose}
+        >
+          <RiCloseLine aria-hidden className="size-4 text-text-tertiary" />
+        </IconButton>
       </div>
       {/* Panel Body */}
-      {(varList.length > 0 || (!isChatMode && message_files.length > 0)) && (
-        <div className='px-6 pt-4 pb-2'>
-          <VarPanel
-            varList={varList}
-            message_files={message_files}
-          />
+      <div className="shrink-0 px-1 pt-1">
+        <div className="rounded-t-xl bg-background-section-burn p-3 pb-2">
+          {(varList.length > 0 || (!isChatMode && message_files.length > 0)) && (
+            <VarPanel varList={varList} message_files={message_files} />
+          )}
         </div>
-      )}
-
-      {!isChatMode
-        ? <div className="px-6 py-4">
-          <div className='flex h-[18px] items-center space-x-3'>
-            <div className='leading-[18px] text-xs font-semibold text-gray-500 uppercase'>{t('appLog.table.header.output')}</div>
-            <div className='grow h-[1px]' style={{
-              background: 'linear-gradient(270deg, rgba(243, 244, 246, 0) 0%, rgb(243, 244, 246) 100%)',
-            }}></div>
-          </div>
-          <TextGeneration
-            className='mt-2'
-            content={detail.message.answer}
-            messageId={detail.message.id}
-            isError={false}
-            onRetry={() => { }}
-            isInstalledApp={false}
-            supportFeedback
-            feedback={detail.message.feedbacks.find((item: any) => item.from_source === 'admin')}
-            onFeedback={feedback => onFeedback(detail.message.id, feedback)}
-            supportAnnotation
-            isShowTextToSpeech
-            appId={appDetail?.id}
-            varList={varList}
-          />
-        </div>
-        : items.length < 8
-          ? <div className="px-2.5 pt-4 mb-4">
-            <Chat
-              chatList={items}
-              isHideSendInput={true}
-              onFeedback={onFeedback}
-              displayScene='console'
-              isShowPromptLog
-              supportAnnotation
+      </div>
+      <div className="mx-1 mb-1 grow overflow-auto rounded-b-xl bg-background-section-burn">
+        {!isChatMode ? (
+          <div className="px-6 py-4">
+            <div className="flex h-4.5 items-center space-x-3">
+              <div className="system-xs-semibold-uppercase text-text-tertiary">
+                {t(($) => $['table.header.output'], { ns: 'appLog' })}
+              </div>
+              <div
+                className="h-px grow"
+                style={{
+                  background:
+                    'linear-gradient(270deg, rgba(243, 244, 246, 0) 0%, rgb(243, 244, 246) 100%)',
+                }}
+              ></div>
+            </div>
+            <TextGeneration
+              appSourceType={AppSourceType.webApp}
+              className="mt-2"
+              content={detail.message.answer}
+              messageId={detail.message.id}
+              isError={false}
+              onRetry={noop}
+              supportFeedback
+              feedback={detail.message.feedbacks.find((item: any) => item.from_source === 'admin')}
+              hideLogAction
+              onFeedback={(feedback) => onFeedback(detail.message.id, feedback)}
               isShowTextToSpeech
-              appId={appDetail?.id}
-              onChatListChange={setItems}
+              siteInfo={null}
             />
           </div>
-          : <div
-            className="px-2.5 py-4"
+        ) : threadChatItems.length < MIN_ITEMS_FOR_SCROLL_LOADING ? (
+          <div className="mb-4 pt-4">
+            <Chat
+              config={
+                {
+                  appId: appDetail.id,
+                  text_to_speech: {
+                    enabled: true,
+                  },
+                  questionEditEnable: false,
+                  supportAnnotation: true,
+                  annotation_reply: {
+                    enabled: true,
+                  },
+                  supportFeedback: true,
+                } as any
+              }
+              chatList={threadChatItems}
+              onAnnotationAdded={handleAnnotationAdded}
+              onAnnotationEdited={handleAnnotationEdited}
+              onAnnotationRemoved={handleAnnotationRemoved}
+              onFeedback={onFeedback}
+              noChatInput
+              showPromptLog={isAdvanced}
+              hideProcessDetail
+              hideLogModal
+              chatContainerInnerClassName="px-3"
+              switchSibling={switchSibling}
+            />
+          </div>
+        ) : (
+          <div
+            className="py-4"
             id="scrollableDiv"
             style={{
-              height: 1000, // Specify a value
-              overflow: 'auto',
               display: 'flex',
               flexDirection: 'column-reverse',
-            }}>
+              height: '100%',
+              overflow: 'auto',
+            }}
+            onScroll={handleScroll}
+          >
             {/* Put the scroll bar always on the bottom */}
-            <InfiniteScroll
-              scrollableTarget="scrollableDiv"
-              dataLength={items.length}
-              next={fetchData}
-              hasMore={hasMore}
-              loader={<div className='text-center text-gray-400 text-xs'>{t('appLog.detail.loading')}...</div>}
-              // endMessage={<div className='text-center'>Nothing more to show</div>}
-              // below props only if you need pull down functionality
-              refreshFunction={fetchData}
-              pullDownToRefresh
-              pullDownToRefreshThreshold={50}
-              // pullDownToRefreshContent={
-              //   <div className='text-center'>Pull down to refresh</div>
-              // }
-              // releaseToRefreshContent={
-              //   <div className='text-center'>Release to refresh</div>
-              // }
-              // To put endMessage and loader to the top.
-              style={{ display: 'flex', flexDirection: 'column-reverse' }}
-              inverse={true}
-            >
+            <div className="flex w-full flex-col-reverse" style={{ position: 'relative' }}>
               <Chat
-                chatList={items}
-                isHideSendInput={true}
+                config={
+                  {
+                    appId: appDetail.id,
+                    text_to_speech: {
+                      enabled: true,
+                    },
+                    questionEditEnable: false,
+                    supportAnnotation: true,
+                    annotation_reply: {
+                      enabled: true,
+                    },
+                    supportFeedback: true,
+                  } as any
+                }
+                chatList={threadChatItems}
+                onAnnotationAdded={handleAnnotationAdded}
+                onAnnotationEdited={handleAnnotationEdited}
+                onAnnotationRemoved={handleAnnotationRemoved}
                 onFeedback={onFeedback}
-                displayScene='console'
-                isShowPromptLog
+                noChatInput
+                showPromptLog={isAdvanced}
+                hideProcessDetail
+                hideLogModal
+                chatContainerInnerClassName="px-3"
+                switchSibling={switchSibling}
               />
-            </InfiniteScroll>
+            </div>
+            {hasMore && (
+              <div className="py-3 text-center">
+                <div className="system-xs-regular text-text-tertiary">
+                  {t(($) => $['detail.loading'], { ns: 'appLog' })}
+                  ...
+                </div>
+              </div>
+            )}
           </div>
-      }
-      {showPromptLogModal && (
+        )}
+      </div>
+      {showMessageLogModal && (
+        <WorkflowContextProvider>
+          <MessageLogModal
+            width={width}
+            currentLogItem={currentLogItem}
+            onCancel={() => {
+              setCurrentLogItem()
+              setShowMessageLogModal(false)
+            }}
+            defaultTab={currentLogModalActiveTab}
+          />
+        </WorkflowContextProvider>
+      )}
+      {showAgentLogModal && (
+        <AgentLogModal
+          floating
+          width={width}
+          currentLogItem={currentLogItem}
+          onCancel={() => {
+            setCurrentLogItem()
+            setShowAgentLogModal(false)
+          }}
+        />
+      )}
+      {shouldShowPromptLogModal && (
         <PromptLogModal
           width={width}
           currentLogItem={currentLogItem}
@@ -417,117 +639,128 @@ function DetailPanel<T extends ChatConversationFullDetailResponse | CompletionCo
           }}
         />
       )}
-      {showAgentLogModal && (
-        <AgentLogModal
-          width={width}
-          currentLogItem={currentLogItem}
-          onCancel={() => {
-            setCurrentLogItem()
-            setShowAgentLogModal(false)
-          }}
-        />
-      )}
-      {showMessageLogModal && (
-        <MessageLogModal
-          width={width}
-          currentLogItem={currentLogItem}
-          onCancel={() => {
-            setCurrentLogItem()
-            setShowMessageLogModal(false)
-          }}
-        />
-      )}
     </div>
   )
+}
+
+type ConversationDetailProps = {
+  appDetail: App
+  conversationId?: string
+  onClose: () => void
 }
 
 /**
  * Text App Conversation Detail Component
  */
-const CompletionConversationDetailComp: FC<{ appId?: string; conversationId?: string }> = ({ appId, conversationId }) => {
+const CompletionConversationDetailComp: FC<ConversationDetailProps> = ({
+  appDetail,
+  conversationId,
+  onClose,
+}) => {
   // Text Generator App Session Details Including Message List
-  const detailParams = ({ url: `/apps/${appId}/completion-conversations/${conversationId}` })
-  const { data: conversationDetail, mutate: conversationDetailMutate } = useSWR(() => (appId && conversationId) ? detailParams : null, fetchCompletionConversationDetail)
-  const { notify } = useContext(ToastContext)
+  const { data: conversationDetail, refetch: conversationDetailMutate } =
+    useCompletionConversationDetail(appDetail.id, conversationId)
   const { t } = useTranslation()
 
-  const handleFeedback = async (mid: string, { rating }: Feedbacktype): Promise<boolean> => {
+  const handleFeedback = async (
+    mid: string,
+    { rating, content }: FeedbackType,
+  ): Promise<boolean> => {
     try {
-      await updateLogMessageFeedbacks({ url: `/apps/${appId}/feedbacks`, body: { message_id: mid, rating } })
+      await updateLogMessageFeedbacks({
+        url: `/apps/${appDetail.id}/feedbacks`,
+        body: { message_id: mid, rating, content: content ?? undefined },
+      })
       conversationDetailMutate()
-      notify({ type: 'success', message: t('common.actionMsg.modifiedSuccessfully') })
+      toast.success(t(($) => $['actionMsg.modifiedSuccessfully'], { ns: 'common' }))
       return true
-    }
-    catch (err) {
-      notify({ type: 'error', message: t('common.actionMsg.modifiedUnsuccessfully') })
+    } catch {
+      toast.error(t(($) => $['actionMsg.modifiedUnsuccessfully'], { ns: 'common' }))
       return false
     }
   }
 
   const handleAnnotation = async (mid: string, value: string): Promise<boolean> => {
     try {
-      await updateLogMessageAnnotations({ url: `/apps/${appId}/annotations`, body: { message_id: mid, content: value } })
+      await updateLogMessageAnnotations({
+        url: `/apps/${appDetail.id}/annotations`,
+        body: { message_id: mid, content: value },
+      })
       conversationDetailMutate()
-      notify({ type: 'success', message: t('common.actionMsg.modifiedSuccessfully') })
+      toast.success(t(($) => $['actionMsg.modifiedSuccessfully'], { ns: 'common' }))
       return true
-    }
-    catch (err) {
-      notify({ type: 'error', message: t('common.actionMsg.modifiedUnsuccessfully') })
+    } catch {
+      toast.error(t(($) => $['actionMsg.modifiedUnsuccessfully'], { ns: 'common' }))
       return false
     }
   }
 
-  if (!conversationDetail)
-    return null
+  if (!conversationDetail) return null
 
-  return <DetailPanel<CompletionConversationFullDetailResponse>
-    detail={conversationDetail}
-    onFeedback={handleFeedback}
-    onSubmitAnnotation={handleAnnotation}
-  />
+  return (
+    <DetailPanel
+      appDetail={appDetail}
+      detail={conversationDetail}
+      onClose={onClose}
+      onFeedback={handleFeedback}
+      onSubmitAnnotation={handleAnnotation}
+    />
+  )
 }
 
 /**
  * Chat App Conversation Detail Component
  */
-const ChatConversationDetailComp: FC<{ appId?: string; conversationId?: string }> = ({ appId, conversationId }) => {
-  const detailParams = { url: `/apps/${appId}/chat-conversations/${conversationId}` }
-  const { data: conversationDetail } = useSWR(() => (appId && conversationId) ? detailParams : null, fetchChatConversationDetail)
-  const { notify } = useContext(ToastContext)
+const ChatConversationDetailComp: FC<ConversationDetailProps> = ({
+  appDetail,
+  conversationId,
+  onClose,
+}) => {
+  const { data: conversationDetail } = useChatConversationDetail(appDetail.id, conversationId)
   const { t } = useTranslation()
 
-  const handleFeedback = async (mid: string, { rating }: Feedbacktype): Promise<boolean> => {
+  const handleFeedback = async (
+    mid: string,
+    { rating, content }: FeedbackType,
+  ): Promise<boolean> => {
     try {
-      await updateLogMessageFeedbacks({ url: `/apps/${appId}/feedbacks`, body: { message_id: mid, rating } })
-      notify({ type: 'success', message: t('common.actionMsg.modifiedSuccessfully') })
+      await updateLogMessageFeedbacks({
+        url: `/apps/${appDetail.id}/feedbacks`,
+        body: { message_id: mid, rating, content: content ?? undefined },
+      })
+      toast.success(t(($) => $['actionMsg.modifiedSuccessfully'], { ns: 'common' }))
       return true
-    }
-    catch (err) {
-      notify({ type: 'error', message: t('common.actionMsg.modifiedUnsuccessfully') })
+    } catch {
+      toast.error(t(($) => $['actionMsg.modifiedUnsuccessfully'], { ns: 'common' }))
       return false
     }
   }
 
   const handleAnnotation = async (mid: string, value: string): Promise<boolean> => {
     try {
-      await updateLogMessageAnnotations({ url: `/apps/${appId}/annotations`, body: { message_id: mid, content: value } })
-      notify({ type: 'success', message: t('common.actionMsg.modifiedSuccessfully') })
+      await updateLogMessageAnnotations({
+        url: `/apps/${appDetail.id}/annotations`,
+        body: { message_id: mid, content: value },
+      })
+      toast.success(t(($) => $['actionMsg.modifiedSuccessfully'], { ns: 'common' }))
       return true
-    }
-    catch (err) {
-      notify({ type: 'error', message: t('common.actionMsg.modifiedUnsuccessfully') })
+    } catch {
+      toast.error(t(($) => $['actionMsg.modifiedUnsuccessfully'], { ns: 'common' }))
       return false
     }
   }
 
-  if (!conversationDetail)
-    return null
+  if (!conversationDetail) return null
 
-  return <DetailPanel<ChatConversationFullDetailResponse>
-    detail={conversationDetail}
-    onFeedback={handleFeedback}
-    onSubmitAnnotation={handleAnnotation}
-  />
+  return (
+    <DetailPanel
+      appDetail={appDetail}
+      detail={conversationDetail}
+      onClose={onClose}
+      onFeedback={handleFeedback}
+      onSubmitAnnotation={handleAnnotation}
+    />
+  )
 }
 
 /**
@@ -535,115 +768,330 @@ const ChatConversationDetailComp: FC<{ appId?: string; conversationId?: string }
  */
 const ConversationList: FC<IConversationList> = ({ logs, appDetail, onRefresh }) => {
   const { t } = useTranslation()
+  const { formatTime } = useTimestamp()
+  const [conversationIdInUrl, setConversationIdInUrl] = useQueryState(
+    'conversation_id',
+    parseAsString,
+  )
 
   const media = useBreakpoints()
   const isMobile = media === MediaType.mobile
 
   const [showDrawer, setShowDrawer] = useState<boolean>(false) // Whether to display the chat details drawer
-  const [currentConversation, setCurrentConversation] = useState<ChatConversationGeneralDetail | CompletionConversationGeneralDetail | undefined>() // Currently selected conversation
-  const isChatMode = appDetail.mode !== 'completion' // Whether the app is a chat app
+  const [currentConversation, setCurrentConversation] = useState<
+    ConversationSelection | undefined
+  >() // Currently selected conversation
+  const closingConversationIdRef = useRef<string | null>(null)
+  const pendingConversationIdRef = useRef<string | null>(null)
+  const pendingConversationCacheRef = useRef<ConversationSelection | undefined>(undefined)
+  const isChatMode = appDetail.mode !== AppModeEnum.COMPLETION // Whether the app is a chat app
+  const isChatflow = appDetail.mode === AppModeEnum.ADVANCED_CHAT // Whether the app is a chatflow app
+  const { setShowPromptLogModal, setShowAgentLogModal, setShowMessageLogModal } = useAppStore(
+    useShallow((state: AppStoreState) => ({
+      setShowPromptLogModal: state.setShowPromptLogModal,
+      setShowAgentLogModal: state.setShowAgentLogModal,
+      setShowMessageLogModal: state.setShowMessageLogModal,
+    })),
+  )
+
+  const activeConversationId =
+    conversationIdInUrl ?? pendingConversationIdRef.current ?? currentConversation?.id
+
+  const handleRowClick = useCallback(
+    (log: ConversationListItem) => {
+      if (conversationIdInUrl === log.id) {
+        if (!showDrawer) setShowDrawer(true)
+
+        if (!currentConversation || currentConversation.id !== log.id) setCurrentConversation(log)
+        return
+      }
+
+      pendingConversationIdRef.current = log.id
+      pendingConversationCacheRef.current = log
+      if (!showDrawer) setShowDrawer(true)
+
+      if (currentConversation?.id !== log.id) setCurrentConversation(undefined)
+
+      void setConversationIdInUrl(log.id, { history: 'push' })
+    },
+    [conversationIdInUrl, currentConversation, setConversationIdInUrl, showDrawer],
+  )
+
+  const currentConversationId = currentConversation?.id
+
+  useEffect(() => {
+    if (!conversationIdInUrl) {
+      if (pendingConversationIdRef.current) return
+
+      if (showDrawer || currentConversationId) {
+        setShowDrawer(false)
+        setCurrentConversation(undefined)
+      }
+      closingConversationIdRef.current = null
+      pendingConversationCacheRef.current = undefined
+      return
+    }
+
+    if (closingConversationIdRef.current === conversationIdInUrl) return
+
+    if (pendingConversationIdRef.current === conversationIdInUrl)
+      pendingConversationIdRef.current = null
+
+    const matchedConversation = logs?.data?.find(
+      (item: ConversationListItem) => item.id === conversationIdInUrl,
+    )
+    const nextConversation: ConversationSelection = matchedConversation ??
+      pendingConversationCacheRef.current ?? { id: conversationIdInUrl, isPlaceholder: true }
+
+    if (!showDrawer) setShowDrawer(true)
+
+    if (
+      !currentConversation ||
+      currentConversation.id !== conversationIdInUrl ||
+      (!('created_at' in currentConversation) && matchedConversation)
+    )
+      setCurrentConversation(nextConversation)
+
+    if (pendingConversationCacheRef.current?.id === conversationIdInUrl || matchedConversation)
+      pendingConversationCacheRef.current = undefined
+  }, [conversationIdInUrl, currentConversation, currentConversationId, logs?.data, showDrawer])
+
+  const onCloseDrawer = useCallback(() => {
+    onRefresh()
+    setShowDrawer(false)
+    setCurrentConversation(undefined)
+    setShowPromptLogModal(false)
+    setShowAgentLogModal(false)
+    setShowMessageLogModal(false)
+    pendingConversationIdRef.current = null
+    pendingConversationCacheRef.current = undefined
+    closingConversationIdRef.current = conversationIdInUrl ?? null
+
+    if (conversationIdInUrl) void setConversationIdInUrl(null, { history: 'replace' })
+  }, [
+    conversationIdInUrl,
+    onRefresh,
+    setConversationIdInUrl,
+    setShowAgentLogModal,
+    setShowMessageLogModal,
+    setShowPromptLogModal,
+  ])
 
   // Annotated data needs to be highlighted
-  const renderTdValue = (value: string | number | null, isEmptyStyle: boolean, isHighlight = false, annotation?: LogAnnotation) => {
+  const renderTdValue = (
+    value: string | number | null,
+    isEmptyStyle: boolean,
+    isHighlight = false,
+    annotation?: LogAnnotation,
+  ) => {
     return (
-      <Tooltip
-        htmlContent={
-          <span className='text-xs text-gray-500 inline-flex items-center'>
-            <EditIconSolid className='mr-1' />{`${t('appLog.detail.annotationTip', { user: annotation?.account?.name })} ${dayjs.unix(annotation?.created_at || dayjs().unix()).format('MM-DD hh:mm A')}`}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div
+              className={cn(
+                isEmptyStyle ? 'text-text-quaternary' : 'text-text-secondary',
+                !isHighlight ? '' : 'bg-orange-100',
+                'truncate system-sm-regular',
+              )}
+            >
+              {value || '-'}
+            </div>
+          }
+        />
+        <TooltipContent className={isHighlight && !isChatMode ? '' : 'hidden!'}>
+          <span className="inline-flex items-center text-xs text-text-tertiary">
+            <RiEditFill className="mr-1 size-3" />
+            {`${t(($) => $['detail.annotationTip'], { ns: 'appLog', user: annotation?.account?.name })} ${formatTime(annotation?.created_at || dayjs().unix(), 'MM-DD hh:mm A')}`}
           </span>
-        }
-        className={(isHighlight && !isChatMode) ? '' : '!hidden'}
-        selector={`highlight-${randomString(16)}`}
-      >
-        <div className={cn(isEmptyStyle ? 'text-gray-400' : 'text-gray-700', !isHighlight ? '' : 'bg-orange-100', 'text-sm overflow-hidden text-ellipsis whitespace-nowrap')}>
-          {value || '-'}
-        </div>
+        </TooltipContent>
       </Tooltip>
     )
   }
 
-  const onCloseDrawer = () => {
-    onRefresh()
-    setShowDrawer(false)
-    setCurrentConversation(undefined)
-  }
-
-  if (!logs)
-    return <Loading />
+  if (!logs) return <Loading />
 
   return (
-    <div className='overflow-x-auto'>
-      <table className={`w-full min-w-[440px] border-collapse border-0 text-sm mt-3 ${s.logTable}`}>
-        <thead className="h-8 leading-8 border-b border-gray-200 text-gray-500 font-bold">
-          <tr>
-            <td className='w-[1.375rem] whitespace-nowrap'></td>
-            <td className='whitespace-nowrap'>{t('appLog.table.header.time')}</td>
-            <td className='whitespace-nowrap'>{t('appLog.table.header.endUser')}</td>
-            <td className='whitespace-nowrap'>{isChatMode ? t('appLog.table.header.summary') : t('appLog.table.header.input')}</td>
-            <td className='whitespace-nowrap'>{isChatMode ? t('appLog.table.header.messageCount') : t('appLog.table.header.output')}</td>
-            <td className='whitespace-nowrap'>{t('appLog.table.header.userRate')}</td>
-            <td className='whitespace-nowrap'>{t('appLog.table.header.adminRate')}</td>
-          </tr>
-        </thead>
-        <tbody className="text-gray-500">
-          {logs.data.map((log: any) => {
-            const endUser = log.from_end_user_session_id
-            const leftValue = get(log, isChatMode ? 'name' : 'message.inputs.query') || (!isChatMode ? (get(log, 'message.query') || get(log, 'message.inputs.default_input')) : '') || ''
-            const rightValue = get(log, isChatMode ? 'message_count' : 'message.answer')
-            return <tr
-              key={log.id}
-              className={`border-b border-gray-200 h-8 hover:bg-gray-50 cursor-pointer ${currentConversation?.id !== log.id ? '' : 'bg-gray-50'}`}
-              onClick={() => {
-                setShowDrawer(true)
-                setCurrentConversation(log)
-              }}>
-              <td className='text-center align-middle'>{!log.read_at && <span className='inline-block bg-[#3F83F8] h-1.5 w-1.5 rounded'></span>}</td>
-              <td className='w-[160px]'>{dayjs.unix(log.created_at).format(t('appLog.dateTimeFormat') as string)}</td>
-              <td>{renderTdValue(endUser || defaultValue, !endUser)}</td>
-              <td style={{ maxWidth: isChatMode ? 300 : 200 }}>
-                {renderTdValue(leftValue || t('appLog.table.empty.noChat'), !leftValue, isChatMode && log.annotated)}
+    <div className="relative mt-2 grow overflow-x-auto">
+      <Drawer
+        open={showDrawer}
+        modal
+        swipeDirection="right"
+        onOpenChange={(open) => {
+          if (!open) onCloseDrawer()
+        }}
+      >
+        <table className={cn('w-full min-w-110 border-collapse border-0')}>
+          <thead className="system-xs-medium-uppercase text-text-tertiary">
+            <tr>
+              <td className="w-5 rounded-l-lg bg-background-section-burn pr-1 pl-2 whitespace-nowrap"></td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {isChatMode
+                  ? t(($) => $['table.header.summary'], { ns: 'appLog' })
+                  : t(($) => $['table.header.input'], { ns: 'appLog' })}
               </td>
-              <td style={{ maxWidth: isChatMode ? 100 : 200 }}>
-                {renderTdValue(rightValue === 0 ? 0 : (rightValue || t('appLog.table.empty.noOutput')), !rightValue, !isChatMode && !!log.annotation?.content, log.annotation)}
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['table.header.endUser'], { ns: 'appLog' })}
               </td>
-              <td>
-                {(!log.user_feedback_stats.like && !log.user_feedback_stats.dislike)
-                  ? renderTdValue(defaultValue, true)
-                  : <>
-                    {!!log.user_feedback_stats.like && <HandThumbIconWithCount iconType='up' count={log.user_feedback_stats.like} />}
-                    {!!log.user_feedback_stats.dislike && <HandThumbIconWithCount iconType='down' count={log.user_feedback_stats.dislike} />}
-                  </>
-                }
+              {isChatflow && (
+                <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                  {t(($) => $['table.header.status'], { ns: 'appLog' })}
+                </td>
+              )}
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {isChatMode
+                  ? t(($) => $['table.header.messageCount'], { ns: 'appLog' })
+                  : t(($) => $['table.header.output'], { ns: 'appLog' })}
               </td>
-              <td>
-                {(!log.admin_feedback_stats.like && !log.admin_feedback_stats.dislike)
-                  ? renderTdValue(defaultValue, true)
-                  : <>
-                    {!!log.admin_feedback_stats.like && <HandThumbIconWithCount iconType='up' count={log.admin_feedback_stats.like} />}
-                    {!!log.admin_feedback_stats.dislike && <HandThumbIconWithCount iconType='down' count={log.admin_feedback_stats.dislike} />}
-                  </>
-                }
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['table.header.userRate'], { ns: 'appLog' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['table.header.adminRate'], { ns: 'appLog' })}
+              </td>
+              <td className="bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['table.header.updatedTime'], { ns: 'appLog' })}
+              </td>
+              <td className="rounded-r-lg bg-background-section-burn py-1.5 pl-3 whitespace-nowrap">
+                {t(($) => $['table.header.time'], { ns: 'appLog' })}
               </td>
             </tr>
-          })}
-        </tbody>
-      </table>
-      <Drawer
-        isOpen={showDrawer}
-        onClose={onCloseDrawer}
-        mask={isMobile}
-        footer={null}
-        panelClassname='mt-16 mx-2 sm:mr-2 mb-4 !p-0 !max-w-[640px] rounded-xl'
-      >
-        <DrawerContext.Provider value={{
-          onClose: onCloseDrawer,
-          appDetail,
-        }}>
-          {isChatMode
-            ? <ChatConversationDetailComp appId={appDetail.id} conversationId={currentConversation?.id} />
-            : <CompletionConversationDetailComp appId={appDetail.id} conversationId={currentConversation?.id} />
-          }
-        </DrawerContext.Provider>
+          </thead>
+          <tbody className="system-sm-regular text-text-secondary">
+            {logs.data.map((log: any) => {
+              const { endUser, isLeftEmpty, isRightEmpty, leftValue, rightValue } =
+                getConversationRowValues({
+                  isChatMode,
+                  log,
+                  noChatLabel: t(($) => $['table.empty.noChat'], { ns: 'appLog' }),
+                  noOutputLabel: t(($) => $['table.empty.noOutput'], { ns: 'appLog' }),
+                })
+              return (
+                <tr
+                  key={log.id}
+                  className={cn(
+                    'cursor-pointer border-b border-divider-subtle hover:bg-background-default-hover',
+                    activeConversationId !== log.id ? '' : 'bg-background-default-hover',
+                  )}
+                  onClick={(event) => {
+                    if ((event.target as HTMLElement).closest('button, a')) return
+                    event.currentTarget
+                      .querySelector<HTMLButtonElement>('button[data-log-detail-trigger]')
+                      ?.click()
+                  }}
+                >
+                  <td className="h-4">
+                    {!log.read_at && (
+                      <div className="flex items-center p-3 pr-0.5">
+                        <span className="inline-block size-1.5 rounded-sm bg-util-colors-blue-blue-500"></span>
+                      </div>
+                    )}
+                  </td>
+                  <td className="w-40 p-3 pr-2" style={{ maxWidth: isChatMode ? 300 : 200 }}>
+                    {renderTdValue(leftValue, isLeftEmpty, isChatMode && log.annotated)}
+                  </td>
+                  <td className="p-3 pr-2">{renderTdValue(endUser || defaultValue, !endUser)}</td>
+                  {isChatflow && (
+                    <td className="w-40 p-3 pr-2" style={{ maxWidth: isChatMode ? 300 : 200 }}>
+                      {statusTdRender(log.status_count)}
+                    </td>
+                  )}
+                  <td className="p-3 pr-2" style={{ maxWidth: isChatMode ? 100 : 200 }}>
+                    {renderTdValue(
+                      rightValue,
+                      isRightEmpty,
+                      !isChatMode && !!log.annotation?.content,
+                      log.annotation,
+                    )}
+                  </td>
+                  <td className="p-3 pr-2">
+                    {!log.user_feedback_stats.like && !log.user_feedback_stats.dislike ? (
+                      renderTdValue(defaultValue, true)
+                    ) : (
+                      <>
+                        {!!log.user_feedback_stats.like && (
+                          <HandThumbIconWithCount
+                            iconType="up"
+                            count={log.user_feedback_stats.like}
+                          />
+                        )}
+                        {!!log.user_feedback_stats.dislike && (
+                          <HandThumbIconWithCount
+                            iconType="down"
+                            count={log.user_feedback_stats.dislike}
+                          />
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td className="p-3 pr-2">
+                    {!log.admin_feedback_stats.like && !log.admin_feedback_stats.dislike ? (
+                      renderTdValue(defaultValue, true)
+                    ) : (
+                      <>
+                        {!!log.admin_feedback_stats.like && (
+                          <HandThumbIconWithCount
+                            iconType="up"
+                            count={log.admin_feedback_stats.like}
+                          />
+                        )}
+                        {!!log.admin_feedback_stats.dislike && (
+                          <HandThumbIconWithCount
+                            iconType="down"
+                            count={log.admin_feedback_stats.dislike}
+                          />
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td className="w-40 p-3 pr-2">
+                    {formatTime(
+                      log.updated_at,
+                      t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+                    )}
+                  </td>
+                  <td className="w-40 p-3 pr-2">
+                    <DrawerTrigger
+                      data-log-detail-trigger
+                      className="w-full cursor-pointer rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-state-accent-solid"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleRowClick(log)
+                      }}
+                    >
+                      {formatTime(
+                        log.created_at,
+                        t(($) => $.dateTimeFormat, { ns: 'appLog' }) as string,
+                      )}
+                    </DrawerTrigger>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <DrawerPortal>
+          <DrawerBackdrop className={cn(!isMobile && 'bg-transparent')} />
+          <DrawerViewport>
+            <DrawerPopup className="bg-components-panel-bg p-0! data-[swipe-direction=right]:top-16 data-[swipe-direction=right]:right-2 data-[swipe-direction=right]:bottom-4 data-[swipe-direction=right]:h-auto data-[swipe-direction=right]:w-full data-[swipe-direction=right]:max-w-160 data-[swipe-direction=right]:rounded-xl">
+              <DrawerContent className="flex min-h-0 flex-1 flex-col p-0 pb-0">
+                {isChatMode ? (
+                  <ChatConversationDetailComp
+                    appDetail={appDetail}
+                    conversationId={currentConversation?.id}
+                    onClose={onCloseDrawer}
+                  />
+                ) : (
+                  <CompletionConversationDetailComp
+                    appDetail={appDetail}
+                    conversationId={currentConversation?.id}
+                    onClose={onCloseDrawer}
+                  />
+                )}
+              </DrawerContent>
+            </DrawerPopup>
+          </DrawerViewport>
+        </DrawerPortal>
       </Drawer>
     </div>
   )

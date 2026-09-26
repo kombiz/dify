@@ -1,22 +1,20 @@
-import { useCallback, useEffect } from 'react'
-import produce from 'immer'
-import { useBoolean } from 'ahooks'
-import useVarList from '../_base/hooks/use-var-list'
-import { VarType } from '../../types'
 import type { Var } from '../../types'
-import { useStore } from '../../store'
 import type { Authorization, Body, HttpNodeType, Method, Timeout } from './types'
-import useKeyValueList from './hooks/use-key-value-list'
+import { produce } from 'immer'
+import { useCallback, useEffect, useState } from 'react'
 import useNodeCrud from '@/app/components/workflow/nodes/_base/hooks/use-node-crud'
-import useOneStepRun from '@/app/components/workflow/nodes/_base/hooks/use-one-step-run'
-import {
-  useNodesReadOnly,
-} from '@/app/components/workflow/hooks'
+import { useNodesReadOnly } from '../../hooks/use-workflow'
+import { useStore } from '../../store'
+import { VarType } from '../../types'
+import useVarList from '../_base/hooks/use-var-list'
+import useKeyValueList from './hooks/use-key-value-list'
+import { BodyType } from './types'
+import { transformToBodyPayload } from './utils'
 
 const useConfig = (id: string, payload: HttpNodeType) => {
   const { nodesReadOnly: readOnly } = useNodesReadOnly()
 
-  const defaultConfig = useStore(s => s.nodesDefaultConfigs)[payload.type]
+  const defaultConfig = useStore((s) => s.nodesDefaultConfigs?.[payload.type])
 
   const { inputs, setInputs } = useNodeCrud<HttpNodeType>(id, payload)
 
@@ -25,39 +23,67 @@ const useConfig = (id: string, payload: HttpNodeType) => {
     setInputs,
   })
 
+  const [isDataReady, setIsDataReady] = useState(false)
+
   useEffect(() => {
     const isReady = defaultConfig && Object.keys(defaultConfig).length > 0
     if (isReady) {
-      setInputs({
-        ...inputs,
+      const newInputs = {
         ...defaultConfig,
-      })
+        ...inputs,
+      }
+      const bodyData = newInputs.body.data
+      if (typeof bodyData === 'string') {
+        newInputs.body = {
+          ...newInputs.body,
+          data: transformToBodyPayload(
+            bodyData,
+            [BodyType.formData, BodyType.xWwwFormUrlencoded].includes(newInputs.body.type),
+          ),
+        }
+      } else if (!bodyData) {
+        newInputs.body = {
+          ...newInputs.body,
+          data: [],
+        }
+      }
+
+      setInputs(newInputs)
+      setIsDataReady(true)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultConfig])
 
-  const handleMethodChange = useCallback((method: Method) => {
-    const newInputs = produce(inputs, (draft: HttpNodeType) => {
-      draft.method = method
-    })
-    setInputs(newInputs)
-  }, [inputs, setInputs])
-
-  const handleUrlChange = useCallback((url: string) => {
-    const newInputs = produce(inputs, (draft: HttpNodeType) => {
-      draft.url = url
-    })
-    setInputs(newInputs)
-  }, [inputs, setInputs])
-
-  const handleFieldChange = useCallback((field: string) => {
-    return (value: string) => {
+  const handleMethodChange = useCallback(
+    (method: Method) => {
       const newInputs = produce(inputs, (draft: HttpNodeType) => {
-        (draft as any)[field] = value
+        draft.method = method
       })
       setInputs(newInputs)
-    }
-  }, [inputs, setInputs])
+    },
+    [inputs, setInputs],
+  )
+
+  const handleUrlChange = useCallback(
+    (url: string) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.url = url
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
+
+  const handleFieldChange = useCallback(
+    (field: string) => {
+      return (value: string) => {
+        const newInputs = produce(inputs, (draft: HttpNodeType) => {
+          ;(draft as any)[field] = value
+        })
+        setInputs(newInputs)
+      }
+    },
+    [inputs, setInputs],
+  )
 
   const {
     list: headers,
@@ -75,76 +101,73 @@ const useConfig = (id: string, payload: HttpNodeType) => {
     toggleIsKeyValueEdit: toggleIsParamKeyValueEdit,
   } = useKeyValueList(inputs.params, handleFieldChange('params'))
 
-  const setBody = useCallback((data: Body) => {
-    const newInputs = produce(inputs, (draft: HttpNodeType) => {
-      draft.body = data
-    })
-    setInputs(newInputs)
-  }, [inputs, setInputs])
+  const setBody = useCallback(
+    (data: Body) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.body = data
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
 
   // authorization
-  const [isShowAuthorization, {
-    setTrue: showAuthorization,
-    setFalse: hideAuthorization,
-  }] = useBoolean(false)
+  const [isShowAuthorization, setIsShowAuthorization] = useState(false)
 
-  const setAuthorization = useCallback((authorization: Authorization) => {
-    const newInputs = produce(inputs, (draft: HttpNodeType) => {
-      draft.authorization = authorization
-    })
-    setInputs(newInputs)
-  }, [inputs, setInputs])
+  const setAuthorization = useCallback(
+    (authorization: Authorization) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.authorization = authorization
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
 
-  const setTimeout = useCallback((timeout: Timeout) => {
-    const newInputs = produce(inputs, (draft: HttpNodeType) => {
-      draft.timeout = timeout
-    })
-    setInputs(newInputs)
-  }, [inputs, setInputs])
+  const setTimeout = useCallback(
+    (timeout: Timeout) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.timeout = timeout
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
 
   const filterVar = useCallback((varPayload: Var) => {
-    return [VarType.string, VarType.number].includes(varPayload.type)
+    return [VarType.string, VarType.number, VarType.secret].includes(varPayload.type)
   }, [])
 
-  // single run
-  const {
-    isShowSingleRun,
-    hideSingleRun,
-    getInputVars,
-    runningStatus,
-    handleRun,
-    handleStop,
-    runInputData,
-    setRunInputData,
-    runResult,
-  } = useOneStepRun<HttpNodeType>({
-    id,
-    data: inputs,
-    defaultRunInputData: {},
-  })
+  // curl import panel
+  const [isShowCurlPanel, setIsShowCurlPanel] = useState(false)
 
-  const varInputs = getInputVars([
-    inputs.url,
-    inputs.headers,
-    inputs.params,
-    inputs.body.data,
-  ])
-
-  const inputVarValues = (() => {
-    const vars: Record<string, any> = {}
-    Object.keys(runInputData)
-      .forEach((key) => {
-        vars[key] = runInputData[key]
+  const handleCurlImport = useCallback(
+    (newNode: HttpNodeType) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.method = newNode.method
+        draft.url = newNode.url
+        draft.headers = newNode.headers
+        draft.params = newNode.params
+        draft.body = newNode.body
       })
-    return vars
-  })()
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
 
-  const setInputVarValues = useCallback((newPayload: Record<string, any>) => {
-    setRunInputData(newPayload)
-  }, [setRunInputData])
+  const handleSSLVerifyChange = useCallback(
+    (checked: boolean) => {
+      const newInputs = produce(inputs, (draft: HttpNodeType) => {
+        draft.ssl_verify = checked
+      })
+      setInputs(newInputs)
+    },
+    [inputs, setInputs],
+  )
 
   return {
     readOnly,
+    isDataReady,
     inputs,
     handleVarListChange,
     handleAddVariable,
@@ -165,22 +188,19 @@ const useConfig = (id: string, payload: HttpNodeType) => {
     toggleIsParamKeyValueEdit,
     // body
     setBody,
+    // ssl verify
+    handleSSLVerifyChange,
     // authorization
     isShowAuthorization,
-    showAuthorization,
-    hideAuthorization,
+    showAuthorization: () => setIsShowAuthorization(true),
+    hideAuthorization: () => setIsShowAuthorization(false),
     setAuthorization,
     setTimeout,
-    // single run
-    isShowSingleRun,
-    hideSingleRun,
-    runningStatus,
-    handleRun,
-    handleStop,
-    varInputs,
-    inputVarValues,
-    setInputVarValues,
-    runResult,
+    // curl import
+    isShowCurlPanel,
+    showCurlPanel: () => setIsShowCurlPanel(true),
+    hideCurlPanel: () => setIsShowCurlPanel(false),
+    handleCurlImport,
   }
 }
 

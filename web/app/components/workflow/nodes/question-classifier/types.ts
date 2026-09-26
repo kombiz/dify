@@ -1,8 +1,15 @@
-import type { CommonNodeType, Memory, ModelConfig, ValueSelector } from '@/app/components/workflow/types'
+import type {
+  CommonNodeType,
+  Memory,
+  ModelConfig,
+  ValueSelector,
+  VisionSetting,
+} from '@/app/components/workflow/types'
 
 export type Topic = {
   id: string
   name: string
+  label?: string
 }
 
 export type QuestionClassifierNodeType = CommonNodeType & {
@@ -11,4 +18,8 @@ export type QuestionClassifierNodeType = CommonNodeType & {
   classes: Topic[]
   instruction: string
   memory?: Memory
+  vision: {
+    enabled: boolean
+    configs?: VisionSetting
+  }
 }

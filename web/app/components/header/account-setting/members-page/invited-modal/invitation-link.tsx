@@ -1,23 +1,22 @@
 'use client'
-import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { t } from 'i18next'
+import type { MemberInviteSuccessResponse } from '@dify/contracts/api/console/workspaces/types.gen'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@langgenius/dify-ui/tooltip'
 import copy from 'copy-to-clipboard'
+import * as React from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import s from './index.module.css'
-import type { SuccessInvationResult } from '.'
-import Tooltip from '@/app/components/base/tooltip'
-import { randomString } from '@/utils'
 
 type IInvitationLinkProps = {
-  value: SuccessInvationResult
+  value: MemberInviteSuccessResponse
 }
 
-const InvitationLink = ({
-  value,
-}: IInvitationLinkProps) => {
+const InvitationLink = ({ value }: IInvitationLinkProps) => {
+  const { t } = useTranslation()
   const [isCopied, setIsCopied] = useState(false)
-  const selector = useRef(`invite-link-${randomString(4)}`)
 
   const copyHandle = useCallback(() => {
+    // No prefix is needed here because the backend has already processed it
     copy(`${!value.url.startsWith('http') ? window.location.origin : ''}${value.url}`)
     setIsCopied(true)
   }, [value])
@@ -35,27 +34,43 @@ const InvitationLink = ({
   }, [isCopied])
 
   return (
-    <div className='flex rounded-lg bg-gray-100 hover:bg-gray-100 border border-gray-200 py-2 items-center'>
-      <div className="flex items-center flex-grow h-5">
-        <div className='flex-grow bg-gray-100 text-[13px] relative h-full'>
-          <Tooltip
-            selector={selector.current}
-            content={isCopied ? `${t('appApi.copied')}` : `${t('appApi.copy')}`}
-            className='z-10'
-          >
-            <div className='absolute top-0 left-0 w-full pl-2 pr-2 truncate cursor-pointer r-0' onClick={copyHandle}>{value.url}</div>
+    <div className="flex items-center rounded-lg border border-components-input-border-active bg-components-input-bg-normal py-2 hover:bg-state-base-hover">
+      <div className="flex h-5 grow items-center">
+        <div className="relative h-full grow text-[13px]">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="absolute inset-x-0 top-0 block w-full cursor-pointer truncate border-none bg-transparent p-0 px-2 text-left text-text-primary"
+                  onClick={copyHandle}
+                >
+                  {value.url}
+                </button>
+              }
+            />
+            <TooltipContent>
+              {isCopied ? t(($) => $.copied, { ns: 'appApi' }) : t(($) => $.copy, { ns: 'appApi' })}
+            </TooltipContent>
           </Tooltip>
         </div>
-        <div className="flex-shrink-0 h-4 bg-gray-200 border" />
-        <Tooltip
-          selector={selector.current}
-          content={isCopied ? `${t('appApi.copied')}` : `${t('appApi.copy')}`}
-          className='z-10'
-        >
-          <div className="px-0.5 flex-shrink-0">
-            <div className={`box-border w-[30px] h-[30px] flex items-center justify-center rounded-lg hover:bg-gray-100 cursor-pointer ${s.copyIcon} ${isCopied ? s.copied : ''}`} onClick={copyHandle}>
-            </div>
-          </div>
+        <div className="h-4 shrink-0 border border-divider-regular bg-divider-regular" />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <div className="shrink-0 px-0.5">
+                <button
+                  type="button"
+                  aria-label={t(($) => $.copy, { ns: 'appApi' })}
+                  className={`box-border flex h-7.5 w-7.5 cursor-pointer items-center justify-center rounded-lg border-none bg-transparent p-0 hover:bg-state-base-hover ${s.copyIcon} ${isCopied ? s.copied : ''}`}
+                  onClick={copyHandle}
+                />
+              </div>
+            }
+          />
+          <TooltipContent>
+            {isCopied ? t(($) => $.copied, { ns: 'appApi' }) : t(($) => $.copy, { ns: 'appApi' })}
+          </TooltipContent>
         </Tooltip>
       </div>
     </div>

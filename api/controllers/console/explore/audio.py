@@ -4,7 +4,9 @@ from flask import request
 from werkzeug.exceptions import InternalServerError
 
 import services
-from controllers.console import api
+from controllers.common.controller_schemas import TextToAudioPayload
+from controllers.common.fields import AudioBinaryResponse, AudioTranscriptResponse
+from controllers.common.schema import register_response_schema_models, register_schema_model
 from controllers.console.app.error import (
     AppUnavailableError,
     AudioTooLargeError,
@@ -14,36 +16,58 @@ from controllers.console.app.error import (
     ProviderNotInitializeError,
     ProviderNotSupportSpeechToTextError,
     ProviderQuotaExceededError,
+    SpeechToTextDisabledError,
     UnsupportedAudioTypeError,
 )
 from controllers.console.explore.wraps import InstalledAppResource
+from controllers.console.wraps import model_validate
 from core.errors.error import ModelCurrentlyNotSupportError, ProviderTokenNotInitError, QuotaExceededError
-from core.model_runtime.errors.invoke import InvokeError
+from extensions.ext_database import db
+from graphon.model_runtime.errors.invoke import InvokeError
+from libs.login import current_account_with_tenant
+from models.model import InstalledApp
+from services.app_ref_service import AppRefService
 from services.audio_service import AudioService
 from services.errors.audio import (
     AudioTooLargeServiceError,
     NoAudioUploadedServiceError,
     ProviderNotSupportSpeechToTextServiceError,
+    SpeechToTextDisabledServiceError,
     UnsupportedAudioTypeServiceError,
 )
 
+from .. import console_ns
 
+logger = logging.getLogger(__name__)
+
+register_schema_model(console_ns, TextToAudioPayload)
+register_response_schema_models(console_ns, AudioBinaryResponse, AudioTranscriptResponse)
+
+
+@console_ns.route(
+    "/installed-apps/<uuid:installed_app_id>/audio-to-text",
+    endpoint="installed_app_audio",
+)
 class ChatAudioApi(InstalledAppResource):
-    def post(self, installed_app):
-        app_model = installed_app.app
+    @console_ns.response(200, "Success", console_ns.models[AudioTranscriptResponse.__name__])
+    def post(self, installed_app: InstalledApp):
+        app_model = installed_app.app_with_session(session=db.session())
+        if app_model is None:
+            raise AppUnavailableError()
 
-        file = request.files['file']
+        file = request.files["file"]
 
         try:
             response = AudioService.transcript_asr(
                 app_model=app_model,
                 file=file,
-                end_user=None
+                session=db.session(),
+                end_user=None,
             )
 
             return response
         except services.errors.app_model_config.AppModelConfigBrokenError:
-            logging.exception("App model config broken.")
+            logger.exception("App model config broken.")
             raise AppUnavailableError()
         except NoAudioUploadedServiceError:
             raise NoAudioUploadedError()
@@ -53,6 +77,8 @@ class ChatAudioApi(InstalledAppResource):
             raise UnsupportedAudioTypeError()
         except ProviderNotSupportSpeechToTextServiceError:
             raise ProviderNotSupportSpeechToTextError()
+        except SpeechToTextDisabledServiceError:
+            raise SpeechToTextDisabledError()
         except ProviderTokenNotInitError as ex:
             raise ProviderNotInitializeError(ex.description)
         except QuotaExceededError:
@@ -64,24 +90,46 @@ class ChatAudioApi(InstalledAppResource):
         except ValueError as e:
             raise e
         except Exception as e:
-            logging.exception("internal server error.")
+            logger.exception("internal server error.")
             raise InternalServerError()
 
 
+@console_ns.route(
+    "/installed-apps/<uuid:installed_app_id>/text-to-audio",
+    endpoint="installed_app_text",
+)
 class ChatTextApi(InstalledAppResource):
-    def post(self, installed_app):
-        app_model = installed_app.app
-
+    @console_ns.expect(console_ns.models[TextToAudioPayload.__name__])
+    @console_ns.response(200, "Success", console_ns.models[AudioBinaryResponse.__name__])
+    @model_validate(TextToAudioPayload)
+    def post(self, req_data: TextToAudioPayload, installed_app: InstalledApp):
+        app_model = installed_app.app_with_session(session=db.session())
+        if app_model is None:
+            raise AppUnavailableError()
         try:
+            message_id = req_data.message_id
+            text = req_data.text
+            voice = req_data.voice
+            message_ref = None
+            if message_id:
+                current_user, _ = current_account_with_tenant()
+                app_ref = AppRefService.create_app_ref(app_model)
+                message_ref = AppRefService.create_message_ref(
+                    app_ref,
+                    message_id,
+                    account_id=current_user.id,
+                )
+
             response = AudioService.transcript_tts(
                 app_model=app_model,
-                text=request.form['text'],
-                voice=request.form.get('voice'),
-                streaming=False
+                session=db.session(),
+                text=text,
+                voice=voice,
+                message_ref=message_ref,
             )
-            return {'data': response.data.decode('latin1')}
+            return response
         except services.errors.app_model_config.AppModelConfigBrokenError:
-            logging.exception("App model config broken.")
+            logger.exception("App model config broken.")
             raise AppUnavailableError()
         except NoAudioUploadedServiceError:
             raise NoAudioUploadedError()
@@ -102,9 +150,5 @@ class ChatTextApi(InstalledAppResource):
         except ValueError as e:
             raise e
         except Exception as e:
-            logging.exception("internal server error.")
+            logger.exception("internal server error.")
             raise InternalServerError()
-
-
-api.add_resource(ChatAudioApi, '/installed-apps/<uuid:installed_app_id>/audio-to-text', endpoint='installed_app_audio')
-api.add_resource(ChatTextApi, '/installed-apps/<uuid:installed_app_id>/text-to-audio', endpoint='installed_app_text')

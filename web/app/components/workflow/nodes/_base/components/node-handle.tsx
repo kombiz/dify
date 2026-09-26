@@ -1,186 +1,265 @@
 import type { MouseEvent } from 'react'
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useState,
-} from 'react'
-import {
-  Handle,
-  Position,
-} from 'reactflow'
-import { BlockEnum } from '../../../types'
+import type { BlockDefaultValue } from '../../../block-selector/types'
 import type { Node } from '../../../types'
+import { cn } from '@langgenius/dify-ui/cn'
+import { memo, useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Handle, Position } from 'reactflow'
 import BlockSelector from '../../../block-selector'
-import type { ToolDefaultValue } from '../../../block-selector/types'
-import {
-  useNodesExtraData,
-  useNodesInteractions,
-  useNodesReadOnly,
-} from '../../../hooks'
-import { useStore } from '../../../store'
+import { useAvailableBlocks } from '../../../hooks/use-available-blocks'
+import { useNodesInteractions } from '../../../hooks/use-nodes-interactions'
+import { useIsChatMode, useNodesReadOnly } from '../../../hooks/use-workflow'
+import { useStore, useWorkflowStore } from '../../../store'
+import { BlockEnum, NodeRunningStatus } from '../../../types'
+import { getNodeCatalogType } from '../../../utils'
 
 type NodeHandleProps = {
   handleId: string
   handleClassName?: string
   nodeSelectorClassName?: string
+  showExceptionStatus?: boolean
 } & Pick<Node, 'id' | 'data'>
 
-export const NodeTargetHandle = memo(({
-  id,
-  data,
-  handleId,
-  handleClassName,
-  nodeSelectorClassName,
-}: NodeHandleProps) => {
-  const [open, setOpen] = useState(false)
-  const { handleNodeAdd } = useNodesInteractions()
-  const nodesExtraData = useNodesExtraData()
-  const { getNodesReadOnly } = useNodesReadOnly()
-  const connected = data._connectedTargetHandleIds?.includes(handleId)
-  const availablePrevNodes = nodesExtraData[data.type].availablePrevNodes
-  const isConnectable = !!availablePrevNodes.length
-
-  const handleOpenChange = useCallback((v: boolean) => {
-    setOpen(v)
-  }, [])
-  const handleHandleClick = useCallback((e: MouseEvent) => {
-    e.stopPropagation()
-    if (!connected)
-      setOpen(v => !v)
-  }, [connected])
-  const handleSelect = useCallback((type: BlockEnum, toolDefaultValue?: ToolDefaultValue) => {
-    handleNodeAdd(
-      {
-        nodeType: type,
-        toolDefaultValue,
-      },
-      {
-        nextNodeId: id,
-        nextNodeTargetHandle: handleId,
-      },
-    )
-  }, [handleNodeAdd, id, handleId])
+const canAutoOpenStartNodeSelector = (nodeType: BlockEnum, isChatMode: boolean) => {
+  if (isChatMode) return false
 
   return (
-    <>
-      <Handle
-        id={handleId}
-        type='target'
-        position={Position.Left}
-        className={`
-          !w-4 !h-4 !bg-transparent !rounded-none !outline-none !border-none z-[1]
-          after:absolute after:w-0.5 after:h-2 after:left-1.5 after:top-1 after:bg-primary-500
-          hover:scale-125 transition-all
-          ${!connected && 'after:opacity-0'}
-          ${data.type === BlockEnum.Start && 'opacity-0'}
-          ${handleClassName}
-        `}
-        isConnectable={isConnectable}
-        onClick={handleHandleClick}
-      >
-        {
-          !connected && isConnectable && !data._isInvalidConnection && !getNodesReadOnly() && (
+    nodeType === BlockEnum.Start ||
+    nodeType === BlockEnum.TriggerSchedule ||
+    nodeType === BlockEnum.TriggerWebhook ||
+    nodeType === BlockEnum.TriggerPlugin
+  )
+}
+
+export const NodeTargetHandle = memo(
+  ({ id, data, handleId, handleClassName, nodeSelectorClassName }: NodeHandleProps) => {
+    const [open, setOpen] = useState(false)
+    const { handleNodeAdd } = useNodesInteractions()
+    const { getNodesReadOnly } = useNodesReadOnly()
+    const connected = data._connectedTargetHandleIds?.includes(handleId)
+    const { availablePrevBlocks } = useAvailableBlocks(
+      getNodeCatalogType(data),
+      data.isInIteration || data.isInLoop,
+    )
+    const isConnectable = !!availablePrevBlocks.length
+
+    const handleOpenChange = useCallback((v: boolean) => {
+      setOpen(v)
+    }, [])
+    const handleHandleClick = useCallback(
+      (e: MouseEvent) => {
+        e.stopPropagation()
+        if (!connected) setOpen((v) => !v)
+      },
+      [connected],
+    )
+    const handleSelect = useCallback(
+      (type: BlockEnum, pluginDefaultValue?: BlockDefaultValue) => {
+        handleNodeAdd(
+          {
+            nodeType: type,
+            pluginDefaultValue,
+          },
+          {
+            nextNodeId: id,
+            nextNodeTargetHandle: handleId,
+          },
+        )
+      },
+      [handleNodeAdd, id, handleId],
+    )
+
+    return (
+      <>
+        <Handle
+          id={handleId}
+          type="target"
+          position={Position.Left}
+          className={cn(
+            'z-1 size-4! rounded-none! border-none! bg-transparent! outline-hidden!',
+            'after:absolute after:top-1 after:left-1.5 after:h-2 after:w-0.5 after:bg-workflow-link-line-handle',
+            'transition-all hover:scale-125',
+            open && 'scale-125',
+            data._runningStatus === NodeRunningStatus.Succeeded &&
+              'after:bg-workflow-link-line-success-handle',
+            data._runningStatus === NodeRunningStatus.Failed &&
+              'after:bg-workflow-link-line-error-handle',
+            data._runningStatus === NodeRunningStatus.Exception &&
+              'after:bg-workflow-link-line-failure-handle',
+            !connected && 'after:opacity-0',
+            (data.type === BlockEnum.Start ||
+              data.type === BlockEnum.TriggerWebhook ||
+              data.type === BlockEnum.TriggerSchedule ||
+              data.type === BlockEnum.TriggerPlugin) &&
+              'opacity-0',
+            handleClassName,
+          )}
+          isConnectable={isConnectable}
+          onClick={handleHandleClick}
+        >
+          {!connected && isConnectable && !getNodesReadOnly() && (
             <BlockSelector
               open={open}
               onOpenChange={handleOpenChange}
               onSelect={handleSelect}
-              asChild
-              placement='left'
-              triggerClassName={open => `
-                hidden absolute left-0 top-0 pointer-events-none
+              snippetInsertPayload={{
+                nextNodeId: id,
+                nextNodeTargetHandle: handleId,
+              }}
+              placement="left"
+              showStartTab
+              triggerClassName={`
+                absolute left-0 top-0 opacity-0 pointer-events-none transition-opacity duration-150
                 ${nodeSelectorClassName}
-                group-hover:!flex
-                ${data.selected && '!flex'}
-                ${open && '!flex'}
+                group-hover:opacity-100
+                ${data.selected && 'opacity-100'}
+                data-popup-open:opacity-100
               `}
-              availableBlocksTypes={availablePrevNodes}
+              availableBlocksTypes={availablePrevBlocks}
             />
-          )
-        }
-      </Handle>
-    </>
-  )
-})
+          )}
+        </Handle>
+      </>
+    )
+  },
+)
 NodeTargetHandle.displayName = 'NodeTargetHandle'
 
-export const NodeSourceHandle = memo(({
-  id,
-  data,
-  handleId,
-  handleClassName,
-  nodeSelectorClassName,
-}: NodeHandleProps) => {
-  const notInitialWorkflow = useStore(s => s.notInitialWorkflow)
-  const [open, setOpen] = useState(false)
-  const { handleNodeAdd } = useNodesInteractions()
-  const nodesExtraData = useNodesExtraData()
-  const { getNodesReadOnly } = useNodesReadOnly()
-  const availableNextNodes = nodesExtraData[data.type].availableNextNodes
-  const isConnectable = !!availableNextNodes.length
-  const connected = data._connectedSourceHandleIds?.includes(handleId)
-  const handleOpenChange = useCallback((v: boolean) => {
-    setOpen(v)
-  }, [])
-  const handleHandleClick = useCallback((e: MouseEvent) => {
-    e.stopPropagation()
-    if (!connected)
-      setOpen(v => !v)
-  }, [connected])
-  const handleSelect = useCallback((type: BlockEnum, toolDefaultValue?: ToolDefaultValue) => {
-    handleNodeAdd(
-      {
-        nodeType: type,
-        toolDefaultValue,
-      },
-      {
-        prevNodeId: id,
-        prevNodeSourceHandle: handleId,
-      },
+export const NodeSourceHandle = memo(
+  ({
+    id,
+    data,
+    handleId,
+    handleClassName,
+    nodeSelectorClassName,
+    showExceptionStatus,
+  }: NodeHandleProps) => {
+    const { t } = useTranslation()
+    const shouldAutoOpenStartNodeSelector = useStore((s) => s.shouldAutoOpenStartNodeSelector)
+    const setShouldAutoOpenStartNodeSelector = useStore((s) => s.setShouldAutoOpenStartNodeSelector)
+    const setHasSelectedStartNode = useStore((s) => s.setHasSelectedStartNode)
+    const workflowStoreApi = useWorkflowStore()
+    const { handleNodeAdd } = useNodesInteractions()
+    const { getNodesReadOnly } = useNodesReadOnly()
+    const { availableNextBlocks } = useAvailableBlocks(
+      getNodeCatalogType(data),
+      data.isInIteration || data.isInLoop,
     )
-  }, [handleNodeAdd, id, handleId])
+    const isConnectable = !!availableNextBlocks.length
+    const isChatMode = useIsChatMode()
+    const shouldAutoOpen =
+      shouldAutoOpenStartNodeSelector && canAutoOpenStartNodeSelector(data.type, isChatMode)
+    const [open, setOpen] = useState(() => shouldAutoOpen)
 
-  useEffect(() => {
-    if (notInitialWorkflow && data.type === BlockEnum.Start)
-      setOpen(true)
-  }, [notInitialWorkflow, data.type])
+    const connected = data._connectedSourceHandleIds?.includes(handleId)
+    const handleOpenChange = useCallback((v: boolean) => {
+      setOpen(v)
+    }, [])
+    const handleHandleClick = useCallback((e: MouseEvent) => {
+      e.stopPropagation()
+      setOpen((v) => !v)
+    }, [])
+    const handleSelect = useCallback(
+      (type: BlockEnum, pluginDefaultValue?: BlockDefaultValue) => {
+        handleNodeAdd(
+          {
+            nodeType: type,
+            pluginDefaultValue,
+          },
+          {
+            prevNodeId: id,
+            prevNodeSourceHandle: handleId,
+          },
+        )
+      },
+      [handleNodeAdd, id, handleId],
+    )
 
-  return (
-    <>
+    useEffect(() => {
+      if (!shouldAutoOpenStartNodeSelector) return
+
+      if (isChatMode) {
+        setShouldAutoOpenStartNodeSelector?.(false)
+        return
+      }
+
+      if (canAutoOpenStartNodeSelector(data.type, false)) {
+        if (setShouldAutoOpenStartNodeSelector) setShouldAutoOpenStartNodeSelector(false)
+        else workflowStoreApi?.setState?.({ shouldAutoOpenStartNodeSelector: false })
+
+        if (setHasSelectedStartNode) setHasSelectedStartNode(false)
+        else workflowStoreApi?.setState?.({ hasSelectedStartNode: false })
+      }
+    }, [
+      shouldAutoOpenStartNodeSelector,
+      data.type,
+      isChatMode,
+      setShouldAutoOpenStartNodeSelector,
+      setHasSelectedStartNode,
+      workflowStoreApi,
+    ])
+
+    return (
       <Handle
         id={handleId}
-        type='source'
+        type="source"
         position={Position.Right}
-        className={`
-          !w-4 !h-4 !bg-transparent !rounded-none !outline-none !border-none z-[1]
-          after:absolute after:w-0.5 after:h-2 after:right-1.5 after:top-1 after:bg-primary-500
-          hover:scale-125 transition-all
-          ${!connected && 'after:opacity-0'}
-          ${handleClassName}
-        `}
+        className={cn(
+          'group/handle z-1 size-4! rounded-none! border-none! bg-transparent! outline-hidden!',
+          'after:absolute after:top-1 after:right-1.5 after:h-2 after:w-0.5 after:bg-workflow-link-line-handle',
+          'transition-all hover:scale-125',
+          open && 'scale-125',
+          data._runningStatus === NodeRunningStatus.Succeeded &&
+            'after:bg-workflow-link-line-success-handle',
+          data._runningStatus === NodeRunningStatus.Failed &&
+            'after:bg-workflow-link-line-error-handle',
+          showExceptionStatus &&
+            data._runningStatus === NodeRunningStatus.Exception &&
+            'after:bg-workflow-link-line-failure-handle',
+          !connected && 'after:opacity-0',
+          handleClassName,
+        )}
         isConnectable={isConnectable}
         onClick={handleHandleClick}
       >
-        {
-          !connected && isConnectable && !data._isInvalidConnection && !getNodesReadOnly() && (
-            <BlockSelector
-              open={open}
-              onOpenChange={handleOpenChange}
-              onSelect={handleSelect}
-              asChild
-              triggerClassName={open => `
-                hidden absolute top-0 left-0 pointer-events-none 
-                ${nodeSelectorClassName}
-                group-hover:!flex
-                ${data.selected && '!flex'}
-                ${open && '!flex'}
-              `}
-              availableBlocksTypes={availableNextNodes}
-            />
-          )
-        }
+        <div className="absolute -top-1 left-1/2 hidden -translate-x-1/2 -translate-y-full rounded-lg border-[0.5px] border-components-panel-border bg-components-tooltip-bg p-1.5 shadow-lg group-hover/handle:block">
+          <div className="system-xs-regular text-text-tertiary">
+            <div className="whitespace-nowrap">
+              <span className="system-xs-medium text-text-secondary">
+                {t(($) => $['common.parallelTip.click.title'], { ns: 'workflow' })}
+              </span>
+              {t(($) => $['common.parallelTip.click.desc'], { ns: 'workflow' })}
+            </div>
+            <div>
+              <span className="system-xs-medium text-text-secondary">
+                {t(($) => $['common.parallelTip.drag.title'], { ns: 'workflow' })}
+              </span>
+              {t(($) => $['common.parallelTip.drag.desc'], { ns: 'workflow' })}
+            </div>
+          </div>
+        </div>
+        {isConnectable && !getNodesReadOnly() && (
+          <BlockSelector
+            open={open}
+            onOpenChange={handleOpenChange}
+            onSelect={handleSelect}
+            snippetInsertPayload={{
+              prevNodeId: id,
+              prevNodeSourceHandle: handleId,
+            }}
+            triggerClassName={`
+              absolute top-0 left-0 opacity-0 pointer-events-none transition-opacity duration-150
+              ${nodeSelectorClassName}
+              group-hover:opacity-100
+              ${data.selected && 'opacity-100'}
+              data-popup-open:opacity-100
+            `}
+            availableBlocksTypes={availableNextBlocks}
+            showStartTab
+          />
+        )}
       </Handle>
-    </>
-  )
-})
+    )
+  },
+)
 NodeSourceHandle.displayName = 'NodeSourceHandle'

@@ -62,6 +62,11 @@
 
 Dify is an open-source LLM app development platform. Its intuitive interface combines AI workflow, RAG pipeline, agent capabilities, model management, observability features (including [Opik](https://www.comet.com/docs/opik/integrations/dify), [Langfuse](https://docs.langfuse.com), and [Arize Phoenix](https://docs.arize.com/phoenix)) and more, letting you quickly go from prototype to production. Here's a list of the core features:
 
+## Homelab deployment
+
+For the OnlyArag instance, see the [operator notes](HANDBOOK.md) for the host,
+Dockge stack, deployment path, and upgrade safety checks.
+
 ## Quick start
 
 > Before installing Dify, make sure your machine meets the following minimum system requirements:
